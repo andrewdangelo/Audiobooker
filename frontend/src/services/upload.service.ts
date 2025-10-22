@@ -9,7 +9,7 @@ export const uploadService = {
     const formData = new FormData()
     formData.append('file', file)
 
-    const response = await api.post('/upload', formData, {
+    const response = await api.post('/api/v1/upload/', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -26,7 +26,7 @@ export const uploadService = {
 
   // Get upload status
   async getStatus(uploadId: string) {
-    const response = await api.get(`/upload/${uploadId}/status`)
+    const response = await api.get(`/api/v1/upload/${uploadId}/status`)
     return response.data
   },
 }
