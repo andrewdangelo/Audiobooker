@@ -15,15 +15,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from storage_sdk import R2Client
 from storage_sdk.path_utils import parse_file_key
 from config.database import get_db
+from config.settings import settings
 from app.schemas.audiobook import AudiobookResponse, AudiobookListResponse, AudiobookUpdate
 from app.services.audiobook_service import AudiobookService
 
 # Initialize R2 client
 r2_client = R2Client(
-    account_id=os.getenv('R2_ACCOUNT_ID'),
-    access_key_id=os.getenv('R2_ACCESS_KEY_ID'),
-    secret_access_key=os.getenv('R2_SECRET_ACCESS_KEY'),
-    bucket_name=os.getenv('R2_BUCKET_NAME')
+    account_id=settings.R2_ACCOUNT_ID,
+    access_key_id=settings.R2_ACCESS_KEY_ID,
+    secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+    bucket_name=settings.R2_BUCKET_NAME
 )
 
 router = APIRouter()

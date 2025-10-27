@@ -197,6 +197,10 @@ def sanitize_filename(filename: str) -> str:
         >>> sanitize_filename("file with spaces & symbols!.mp3")
         "file_with_spaces_symbols.mp3"
     """
+    # Handle None or non-string input
+    if not filename or not isinstance(filename, str):
+        raise ValueError(f"filename must be a non-empty string, got: {type(filename).__name__}")
+    
     # Keep the extension
     path = Path(filename)
     name = path.stem

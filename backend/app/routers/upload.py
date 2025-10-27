@@ -16,16 +16,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from storage_sdk import R2Client
 from storage_sdk.path_utils import generate_file_key, sanitize_filename
 from config.database import get_db
+from config.settings import settings
 from app.services.audiobook_service import AudiobookService
 
 logger = logging.getLogger(__name__)
 
 # Initialize R2 client once (will be reused across requests)
 r2_client = R2Client(
-    account_id=os.getenv('R2_ACCOUNT_ID'),
-    access_key_id=os.getenv('R2_ACCESS_KEY_ID'),
-    secret_access_key=os.getenv('R2_SECRET_ACCESS_KEY'),
-    bucket_name=os.getenv('R2_BUCKET_NAME')
+    account_id=settings.R2_ACCOUNT_ID,
+    access_key_id=settings.R2_ACCESS_KEY_ID,
+    secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+    bucket_name=settings.R2_BUCKET_NAME
 )
 
 router = APIRouter()
@@ -49,6 +50,13 @@ async def upload_pdf(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Only PDF files are allowed"
+            )
+        
+        # Validate filename is a string
+        if not isinstance(file.filename, str):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid filename type: {type(file.filename).__name__}"
             )
         
         # Read file content
