@@ -1,5 +1,10 @@
 """
 Cloud Storage Service (Cloudflare R2) with Local Fallback
+
+⚠️ DEPRECATED: This service is deprecated in favor of the storage_sdk.
+Please use storage_sdk.R2Client instead for new code.
+
+This file is kept for backwards compatibility but will be removed in a future version.
 """
 
 import boto3

@@ -6,12 +6,28 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, status, Depends
 from sqlalchemy.orm import Session
 import uuid
 import logging
+import sys
+import os
+from pathlib import Path
 
+# Add storage_sdk to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+from storage_sdk import R2Client
+from storage_sdk.path_utils import generate_file_key, sanitize_filename
 from config.database import get_db
-from app.services.storage_service import StorageService
+from config.settings import settings
 from app.services.audiobook_service import AudiobookService
 
 logger = logging.getLogger(__name__)
+
+# Initialize R2 client once (will be reused across requests)
+r2_client = R2Client(
+    account_id=settings.R2_ACCOUNT_ID,
+    access_key_id=settings.R2_ACCESS_KEY_ID,
+    secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+    bucket_name=settings.R2_BUCKET_NAME
+)
 
 router = APIRouter()
 
@@ -36,6 +52,13 @@ async def upload_pdf(
                 detail="Only PDF files are allowed"
             )
         
+        # Validate filename is a string
+        if not isinstance(file.filename, str):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid filename type: {type(file.filename).__name__}"
+            )
+        
         # Read file content
         logger.info(f"Processing upload: {file.filename}")
         content = await file.read()
@@ -48,17 +71,22 @@ async def upload_pdf(
                 detail=f"File size exceeds maximum allowed size of 50MB"
             )
         
-        # Generate unique filename for storage
-        file_id = str(uuid.uuid4())
-        file_extension = file.filename.split('.')[-1]
-        storage_filename = f"{file_id}.{file_extension}"
+        # Generate unique book ID
+        book_id = str(uuid.uuid4())
         
-        # Upload to storage (R2 or local fallback)
-        logger.info(f"Uploading to storage: {storage_filename}")
-        storage_service = StorageService()
-        file_path = await storage_service.upload_file(
-            file_content=content,
-            file_name=storage_filename,
+        # Sanitize filename and generate R2 key
+        safe_filename = sanitize_filename(file.filename)
+        r2_key = generate_file_key(
+            book_id=book_id,
+            file_type="pdf",
+            file_name=safe_filename
+        )
+        
+        # Upload to R2 using storage SDK
+        logger.info(f"Uploading to R2: {r2_key}")
+        upload_result = r2_client.upload(
+            key=r2_key,
+            file_data=content,
             content_type=file.content_type or "application/pdf"
         )
         
@@ -68,11 +96,11 @@ async def upload_pdf(
         
         # Prepare data as dictionary for the service
         audiobook_data = {
-            "id": file_id,  # Use the same UUID we generated
+            "id": book_id,
             "title": file.filename.rsplit('.', 1)[0],  # Remove .pdf extension
             "original_file_name": file.filename,
             "file_size": file_size,
-            "pdf_path": file_path,
+            "pdf_path": upload_result["url"],  # r2://bucket/key format
             "status": "pending"
         }
         
@@ -87,9 +115,11 @@ async def upload_pdf(
             "filename": audiobook.original_file_name,
             "size": audiobook.file_size,
             "pdf_path": audiobook.pdf_path,
+            "r2_key": upload_result["key"],  # Include R2 key for reference
+            "r2_bucket": upload_result["bucket"],
             "status": audiobook.status,
             "created_at": audiobook.created_at.isoformat(),
-            "message": "File uploaded successfully to storage and database"
+            "message": "File uploaded successfully to R2 and database"
         }
         
     except HTTPException:
