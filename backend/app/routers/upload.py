@@ -6,12 +6,6 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, status, Depends
 from sqlalchemy.orm import Session
 import uuid
 import logging
-import sys
-import os
-from pathlib import Path
-
-# Add storage_sdk to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from storage_sdk import R2Client
 from storage_sdk.path_utils import generate_file_key, sanitize_filename

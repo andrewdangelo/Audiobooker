@@ -5,12 +5,6 @@ Audiobooks API Router
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
-import sys
-import os
-from pathlib import Path
-
-# Add storage_sdk to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from storage_sdk import R2Client
 from storage_sdk.path_utils import parse_file_key
