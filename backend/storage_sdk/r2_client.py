@@ -10,10 +10,12 @@ from botocore.exceptions import ClientError
 from typing import Optional, Dict, Any, List, BinaryIO, Union
 from pathlib import Path
 import os
+from dotenv import load_dotenv
 import logging
 
 logger = logging.getLogger(__name__)
-
+# Load .env file into the environment
+load_dotenv()
 
 class R2Client:
     """

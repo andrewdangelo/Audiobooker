@@ -26,7 +26,10 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(health.router, tags=["Health"])
+app.include_router(
+    health.router, 
+    tags=["Health"]
+)
 app.include_router(
     audiobooks.router,
     prefix=f"{settings.API_V1_PREFIX}/audiobooks",

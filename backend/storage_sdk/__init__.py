@@ -20,6 +20,8 @@ from .r2_client import (
 from .path_utils import (
     generate_file_key,
     parse_file_key,
+    generate_unique_key,
+    sanitize_filename,
 )
 
 __all__ = [
@@ -29,6 +31,7 @@ __all__ = [
     "delete_file",
     "generate_presigned_url",
     "list_files",
+    generate_unique_key,
     "generate_file_key",
     "parse_file_key",
 ]

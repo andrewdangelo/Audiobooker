@@ -128,7 +128,7 @@ async def upload_pdf(
 
 @router.get("/{upload_id}/status")
 async def get_upload_status(upload_id: str):
-    """Get the status of an upload/conversion"""
+    """Get the status of book from microservice TODO"""
     return {
         "id": upload_id,
         "status": "pending",
