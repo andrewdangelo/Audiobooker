@@ -1,3 +1,0 @@
-# Migrations directory placeholder
-# Use Alembic for database migrations:
-# alembic revision --autogenerate -m "migration message"
