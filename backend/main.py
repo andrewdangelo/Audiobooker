@@ -5,7 +5,7 @@ FastAPI Application Entry Point
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config.settings import settings
-from app.routers import audiobooks, upload, conversion, health
+from app.routers import audiobooks, upload, conversion, health, auth  # ← ADDED AUTH
 
 # Create FastAPI app instance
 app = FastAPI(
@@ -27,6 +27,14 @@ app.add_middleware(
 
 # Include routers
 app.include_router(health.router, tags=["Health"])
+
+# ← ADDED AUTH ROUTES (NO OTHER CHANGES)
+app.include_router(
+    auth.router,
+    prefix="/api/v1/auth",
+    tags=["Auth"]
+)
+
 app.include_router(
     audiobooks.router,
     prefix=f"{settings.API_V1_PREFIX}/audiobooks",
