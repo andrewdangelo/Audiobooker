@@ -148,7 +148,7 @@ export function Sidebar() {
             <BookMarked className="h-5 w-5" />
           </div>
           {!isCollapsed && (
-            <span className="font-bold text-lg">Audiobooker</span>
+            <span className="font-bold text-lg">Audion</span>
           )}
         </div>
         

@@ -11,7 +11,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 
 // Channel name for audio player synchronization
-const AUDIO_SYNC_CHANNEL = 'audiobooker-audio-sync'
+const AUDIO_SYNC_CHANNEL = 'audion-audio-sync'
 
 // Message types for cross-window communication
 export type AudioSyncMessageType =
@@ -212,7 +212,7 @@ export function useAudioSync(options: UseAudioSyncOptions = {}): UseAudioSyncRet
     
     const popout = window.open(
       popoutUrl,
-      'audiobooker-popout',
+      'audion-popout',
       `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=no`
     )
     

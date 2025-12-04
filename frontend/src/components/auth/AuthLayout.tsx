@@ -35,7 +35,7 @@ export default function AuthLayout({ children, title, subtitle }: AuthLayoutProp
           <div className="p-2 rounded-xl bg-primary text-primary-foreground group-hover:scale-105 transition-transform">
             <BookOpen className="h-8 w-8" />
           </div>
-          <span className="text-2xl font-bold">Audiobooker</span>
+          <span className="text-2xl font-bold">Audion</span>
         </Link>
         
         <h2 className="mt-6 text-center text-3xl font-bold tracking-tight">
@@ -58,7 +58,7 @@ export default function AuthLayout({ children, title, subtitle }: AuthLayoutProp
 
       {/* Footer */}
       <p className="mt-8 text-center text-xs text-muted-foreground">
-        © {new Date().getFullYear()} Audiobooker. All rights reserved.
+        © {new Date().getFullYear()} Audion. All rights reserved.
       </p>
     </div>
   )

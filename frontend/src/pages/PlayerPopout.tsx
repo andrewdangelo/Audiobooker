@@ -34,13 +34,13 @@ export default function PlayerPopout() {
     setIsReady(true)
     
     // Set window title
-    document.title = 'Audiobooker - Pop-out Player'
+    document.title = 'Audion - Pop-out Player'
   }, [searchParams])
   
   // Update document title when we have the audiobook title
   useEffect(() => {
     if (initialState?.title) {
-      document.title = `${initialState.title} - Audiobooker`
+      document.title = `${initialState.title} - Audion`
     }
   }, [initialState?.title])
   

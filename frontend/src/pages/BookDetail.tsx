@@ -57,7 +57,7 @@ export default function BookDetail() {
     
     window.open(
       popoutUrl,
-      'audiobooker-popout',
+      'audion-popout',
       `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=no`
     )
   }
@@ -215,7 +215,7 @@ function handlePlayChapter(book: DemoBook, startTime: number) {
   
   window.open(
     popoutUrl,
-    'audiobooker-popout',
+    'audion-popout',
     `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=no`
   )
 }
