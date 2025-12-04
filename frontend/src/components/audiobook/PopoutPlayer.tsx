@@ -11,7 +11,7 @@
  * - Playback speed control
  * - Always-on-top appearance
  * 
- * @author Audiobooker Team
+ * @author Andrew D'Angelo
  * @version 1.0.0
  */
 

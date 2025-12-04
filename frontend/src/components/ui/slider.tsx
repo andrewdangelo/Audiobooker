@@ -4,7 +4,7 @@
  * A customizable range slider component built with Radix UI
  * Used for audio progress bar and other range inputs
  * 
- * @author Audiobooker Team
+ * @author Andrew D'Angelo
  */
 
 import * as React from "react"

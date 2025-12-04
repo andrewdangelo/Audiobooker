@@ -4,7 +4,7 @@
  * Dedicated page for the pop-out player window.
  * Reads initial state from URL parameters and renders the PopoutPlayer component.
  * 
- * @author Audiobooker Team
+ * @author Andrew D'Angelo
  * @version 1.0.0
  */
 

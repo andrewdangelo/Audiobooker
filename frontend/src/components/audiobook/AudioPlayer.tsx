@@ -17,7 +17,7 @@
  * - Line 215-220: Fetch/Save bookmarks to API
  * - Line 225-230: Fetch chapter data from API
  * 
- * @author Audiobooker Team
+ * @author Andrew D'Angelo
  * @version 1.0.0
  */
 

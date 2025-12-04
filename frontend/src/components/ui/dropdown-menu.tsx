@@ -4,7 +4,7 @@
  * A dropdown menu component built with Radix UI
  * Used for playback speed selection and other menu interactions
  * 
- * @author Audiobooker Team
+ * @author Andrew D'Angelo
  */
 
 import * as React from "react"

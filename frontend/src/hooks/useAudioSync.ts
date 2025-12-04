@@ -4,7 +4,7 @@
  * Manages cross-window audio player synchronization using BroadcastChannel API.
  * Enables communication between main window and pop-out player window.
  * 
- * @author Audiobooker Team
+ * @author Andrew D'Angelo
  * @version 1.0.0
  */
 
