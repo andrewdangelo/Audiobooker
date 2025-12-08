@@ -31,6 +31,9 @@ env/
 # Environment variables
 .env
 .env.local
+.env.staging
+.env.production
+.env.railway
 
 # IDE
 .vscode/

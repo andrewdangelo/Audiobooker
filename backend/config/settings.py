@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     R2_ENDPOINT_URL: str = ""
     
     # CORS
-    CORS_ORIGINS: Union[list[str], str] = "http://localhost:5173,http://localhost:3000"
+    CORS_ORIGINS: Union[list[str], str] = "http://localhost:5173,http://localhost:5175,http://localhost:3000"
     
     @field_validator('CORS_ORIGINS', mode='before')
     @classmethod

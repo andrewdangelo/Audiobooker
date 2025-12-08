@@ -5,7 +5,7 @@ FastAPI Application Entry Point
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config.settings import settings
-from app.routers import audiobooks, upload, conversion, health
+from app.routers import audiobooks, upload, conversion, health, auth  # ← ADDED AUTH
 
 # Create FastAPI app instance
 app = FastAPI(
@@ -16,10 +16,10 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Configure CORS
+# Configure CORS - use settings for production flexibility
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,6 +27,14 @@ app.add_middleware(
 
 # Include routers
 app.include_router(health.router, tags=["Health"])
+
+# ← ADDED AUTH ROUTES (NO OTHER CHANGES)
+app.include_router(
+    auth.router,
+    prefix="/api/v1/auth",
+    tags=["Auth"]
+)
+
 app.include_router(
     audiobooks.router,
     prefix=f"{settings.API_V1_PREFIX}/audiobooks",
@@ -58,9 +66,12 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
+    import os
+    
+    port = int(os.getenv("PORT", 8000))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,
         reload=settings.DEBUG,
     )
