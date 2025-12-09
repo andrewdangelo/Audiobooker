@@ -2,6 +2,10 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Dashboard from './pages/Dashboard'
 import Upload from './pages/Upload'
 import Library from './pages/Library'
+import Store from './pages/Store'
+import StoreBookDetail from './pages/StoreBookDetail'
+import Cart from './pages/Cart'
+import Checkout from './pages/Checkout'
 import BookDetail from './pages/BookDetail'
 import NotFound from './pages/NotFound'
 import PlayerDemo from './pages/PlayerDemo'
@@ -30,6 +34,10 @@ function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/library" element={<Library />} />
+          <Route path="/store" element={<Store />} />
+          <Route path="/store/book/:id" element={<StoreBookDetail />} />
+          <Route path="/cart" element={<Cart />} />
+          <Route path="/checkout" element={<Checkout />} />
           <Route path="/book/:id" element={<BookDetail />} />
           <Route path="/upload" element={<Upload />} />
           <Route path="/player-demo" element={<PlayerDemo />} />

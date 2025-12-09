@@ -7,6 +7,7 @@
  * @author Andrew D'Angelo
  */
 
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { 
   BookOpen, 
@@ -19,6 +20,16 @@ import {
   Sparkles
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  useAppDispatch,
+  useAppSelector,
+  fetchAudiobooks,
+  selectAllAudiobooks,
+  selectInProgressAudiobooks,
+  selectRecentlyPlayed,
+  selectCurrentUser,
+  selectListeningHistory,
+} from '@/store'
 
 // TODO: API Integration Points
 // - GET /api/v1/users/{userId}/stats - Fetch user statistics
@@ -26,32 +37,55 @@ import { Button } from '@/components/ui/button'
 // - GET /api/v1/users/{userId}/continue-listening - Fetch continue listening items
 // - GET /api/v1/recommendations - Fetch personalized recommendations
 
-// Mock data - replace with API calls
-const mockStats = {
-  totalBooks: 12,
-  hoursListened: 48.5,
-  booksInProgress: 3,
-  completedThisMonth: 2
-}
-
-const mockContinueListening = [
-  {
-    id: 'demo-great-gatsby',
-    title: 'The Great Gatsby',
-    author: 'F. Scott Fitzgerald',
-    progress: 65,
-    lastPlayed: '2 hours ago',
-    coverImage: undefined
-  },
-  {
-    id: 'demo-1984',
-    title: '1984',
-    author: 'George Orwell',
-    progress: 23,
-    lastPlayed: 'Yesterday',
-    coverImage: undefined
+export default function Dashboard() {
+  const dispatch = useAppDispatch()
+  const user = useAppSelector(selectCurrentUser)
+  const allBooks = useAppSelector(selectAllAudiobooks)
+  const inProgressBooks = useAppSelector(selectInProgressAudiobooks)
+  const recentlyPlayed = useAppSelector(selectRecentlyPlayed)
+  const listeningHistory = useAppSelector(selectListeningHistory)
+  
+  // Fetch audiobooks on mount
+  useEffect(() => {
+    dispatch(fetchAudiobooks())
+  }, [dispatch])
+  
+  // Calculate stats from Redux state
+  const stats = {
+    totalBooks: allBooks.length,
+    hoursListened: listeningHistory.reduce((acc, entry) => acc + (entry.duration * entry.progress / 100 / 3600), 0),
+    booksInProgress: inProgressBooks.length,
+    completedThisMonth: allBooks.filter(b => b.progress === 100).length
   }
-]
+  
+  // Use recently played from Redux or demo data
+  const continueListening = recentlyPlayed.length > 0 
+    ? recentlyPlayed.slice(0, 2).map(book => ({
+        id: book.id,
+        title: book.title,
+        author: book.author,
+        progress: book.progress || 0,
+        lastPlayed: book.lastPlayedAt ? 'Recently' : 'Never',
+        coverImage: book.coverImage
+      }))
+    : [
+        {
+          id: 'demo-great-gatsby',
+          title: 'The Great Gatsby',
+          author: 'F. Scott Fitzgerald',
+          progress: 65,
+          lastPlayed: '2 hours ago',
+          coverImage: undefined
+        },
+        {
+          id: 'demo-1984',
+          title: '1984',
+          author: 'George Orwell',
+          progress: 23,
+          lastPlayed: 'Yesterday',
+          coverImage: undefined
+        }
+      ]
 
 const mockRecentActivity = [
   { type: 'listened', title: 'The Great Gatsby', time: '2 hours ago' },
@@ -60,13 +94,14 @@ const mockRecentActivity = [
   { type: 'uploaded', title: 'New Audiobook', time: '1 week ago' }
 ]
 
-export default function Dashboard() {
   return (
     <div className="p-6 md:p-8 space-y-8 max-w-7xl mx-auto">
       {/* Welcome Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Welcome back!</h1>
+          <h1 className="text-3xl font-bold tracking-tight">
+            Welcome back{user?.name ? `, ${user.name}` : ''}!
+          </h1>
           <p className="text-muted-foreground mt-1">
             Here's what's happening with your audiobooks
           </p>
@@ -92,27 +127,27 @@ export default function Dashboard() {
         <StatCard
           icon={BookOpen}
           label="Total Audiobooks"
-          value={mockStats.totalBooks.toString()}
+          value={stats.totalBooks.toString()}
           trend="+2 this month"
           trendUp={true}
         />
         <StatCard
           icon={Clock}
           label="Hours Listened"
-          value={`${mockStats.hoursListened}h`}
+          value={`${stats.hoursListened.toFixed(1)}h`}
           trend="+12h this week"
           trendUp={true}
         />
         <StatCard
           icon={Headphones}
           label="In Progress"
-          value={mockStats.booksInProgress.toString()}
+          value={stats.booksInProgress.toString()}
           subtitle="books"
         />
         <StatCard
           icon={TrendingUp}
           label="Completed"
-          value={mockStats.completedThisMonth.toString()}
+          value={stats.completedThisMonth.toString()}
           subtitle="this month"
         />
       </div>
@@ -130,9 +165,9 @@ export default function Dashboard() {
             </Button>
           </div>
           
-          {mockContinueListening.length > 0 ? (
+          {continueListening.length > 0 ? (
             <div className="grid sm:grid-cols-2 gap-4">
-              {mockContinueListening.map((book) => (
+              {continueListening.map((book) => (
                 <ContinueListeningCard key={book.id} {...book} />
               ))}
             </div>

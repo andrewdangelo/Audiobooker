@@ -1,7 +1,7 @@
 /**
  * Navbar Component
  * 
- * Top navigation bar for authenticated pages with search and user profile.
+ * Top navigation bar for authenticated pages with search, cart, and user profile.
  * 
  * @author Andrew D'Angelo
  */
@@ -17,7 +17,8 @@ import {
   HelpCircle,
   Moon,
   Sun,
-  BookMarked
+  BookMarked,
+  ShoppingCart
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -29,6 +30,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Separator } from '@/components/ui/separator'
+import { useAppSelector } from '@/store/hooks'
+import { selectCartItemCount } from '@/store/slices/cartSlice'
 
 // TODO: API Integration Points
 // - GET /api/v1/users/me - Fetch current user profile
@@ -48,6 +51,9 @@ interface NavbarProps {
 export function Navbar({ user }: NavbarProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [isDarkMode, setIsDarkMode] = useState(false)
+  
+  // Cart item count from Redux
+  const cartItemCount = useAppSelector(selectCartItemCount)
   
   // Mock user data - replace with actual auth context
   const currentUser = user || {
@@ -123,6 +129,24 @@ export function Navbar({ user }: NavbarProps) {
             ) : (
               <Moon className="h-5 w-5" />
             )}
+          </Button>
+          
+          {/* Shopping Cart */}
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            className="relative"
+            asChild
+          >
+            <Link to="/cart" aria-label="Shopping cart">
+              <ShoppingCart className="h-5 w-5" />
+              {cartItemCount > 0 && (
+                <span className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-primary text-primary-foreground text-xs font-medium flex items-center justify-center">
+                  {cartItemCount > 9 ? '9+' : cartItemCount}
+                </span>
+              )}
+              <span className="sr-only">Cart ({cartItemCount} items)</span>
+            </Link>
           </Button>
           
           {/* Notifications */}
