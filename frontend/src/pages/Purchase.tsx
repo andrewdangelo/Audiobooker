@@ -270,7 +270,7 @@ export default function Purchase() {
                   <Checkbox 
                     id="terms" 
                     checked={agreeToTerms}
-                    onCheckedChange={(checked) => setAgreeToTerms(checked as boolean)}
+                    onChange={(e) => setAgreeToTerms(e.target.checked)}
                   />
                   <label
                     htmlFor="terms"
