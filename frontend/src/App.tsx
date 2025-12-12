@@ -7,6 +7,10 @@ import StoreBookDetail from './pages/StoreBookDetail'
 import Cart from './pages/Cart'
 import Checkout from './pages/Checkout'
 import BookDetail from './pages/BookDetail'
+import AudiobookPreview from './pages/AudiobookPreview'
+import Pricing from './pages/Pricing'
+import Purchase from './pages/Purchase'
+import PurchaseSuccess from './pages/PurchaseSuccess'
 import NotFound from './pages/NotFound'
 import PlayerDemo from './pages/PlayerDemo'
 import PlayerPopout from './pages/PlayerPopout'
@@ -40,6 +44,10 @@ function App() {
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/book/:id" element={<BookDetail />} />
           <Route path="/upload" element={<Upload />} />
+          <Route path="/preview/:previewId" element={<AudiobookPreview />} />
+          <Route path="/pricing" element={<Pricing />} />
+          <Route path="/purchase" element={<Purchase />} />
+          <Route path="/purchase/success" element={<PurchaseSuccess />} />
           <Route path="/player-demo" element={<PlayerDemo />} />
           <Route path="*" element={<NotFound />} />
         </Route>

@@ -18,7 +18,8 @@ import {
   Moon,
   Sun,
   BookMarked,
-  ShoppingCart
+  ShoppingCart,
+  Coins
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -45,6 +46,7 @@ interface NavbarProps {
     name: string
     email: string
     avatarUrl?: string
+    credits?: number
   }
 }
 
@@ -59,7 +61,8 @@ export function Navbar({ user }: NavbarProps) {
   const currentUser = user || {
     name: 'John Doe',
     email: 'john@example.com',
-    avatarUrl: undefined
+    avatarUrl: undefined,
+    credits: 25 // TODO: Fetch from API - GET /api/v1/users/me/credits
   }
   
   // TODO: Implement actual search functionality
@@ -115,6 +118,19 @@ export function Navbar({ user }: NavbarProps) {
           <Button variant="ghost" size="icon" className="sm:hidden">
             <Search className="h-5 w-5" />
             <span className="sr-only">Search</span>
+          </Button>
+          
+          {/* Credits Button */}
+          <Button 
+            variant="outline" 
+            size="sm"
+            className="hidden sm:flex items-center gap-2 font-semibold"
+            asChild
+          >
+            <Link to="/pricing">
+              <Coins className="h-4 w-4" />
+              <span>{currentUser.credits} Credits</span>
+            </Link>
           </Button>
           
           {/* Theme Toggle */}
