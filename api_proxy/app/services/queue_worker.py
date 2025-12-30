@@ -29,7 +29,7 @@ async def process_queued_request(service_name: str, queue_id: str, slot_id: str)
         logger.warning(f"Queue item {queue_id} not found")
         return
     
-    logger.info(f"MOE *************************** ---> Processing {queue_id} with slot id: {slot_id}")
+    logger.info(f"Processing {queue_id} with slot id: {slot_id}")
     
     try:
         # Update status
@@ -77,7 +77,7 @@ async def process_queued_request(service_name: str, queue_id: str, slot_id: str)
         await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "response_status", response.status_code)
         await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "response_body", response.text)
         
-        # Set expiration on completed request (1 hour for user to check status)
+        # Setting expiration on completed request
         await redis_manager.expire(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", redis_manager.ONE_HOUR_TTL)
         
         logger.info(f"Completed queue item {queue_id} with status {response.status_code}")
@@ -86,8 +86,9 @@ async def process_queued_request(service_name: str, queue_id: str, slot_id: str)
         logger.error(f"Error processing queue item {queue_id}: {str(e)}", exc_info=True)
         await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "status", "failed")
         await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "error", str(e))
+        await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "completed_at", datetime.now().isoformat())
         
-        # Set expiration on failed request
+        # setting exp on failed request
         await redis_manager.expire(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", redis_manager.ONE_HOUR_TTL)
 
 
@@ -98,7 +99,7 @@ async def queue_worker(service_name: str, worker_id: int):
     logger.info(f"Started queue worker {worker_id} for {service_name}")
 
     while _workers_running:
-        # Pop an item 
+        # Popping item from queue
         result = await redis_manager.blpop(f"{redis_manager.QUEUE}:{service_name}", timeout=1)
         
         if not result:
@@ -117,6 +118,13 @@ async def queue_worker(service_name: str, worker_id: int):
             await process_queued_request(service_name, queue_id, slot_id)
         except Exception as e:
             logger.error(f"Worker {worker_id} error processing {queue_id}: {e}", exc_info=True)
+            
+            status = await redis_manager.hget(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "status")
+            if status not in ["completed", "failed"]:
+                await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "status", "failed")
+                await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "error", f"Worker exception: {str(e)}")
+                await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", "completed_at", datetime.now().isoformat())
+                await redis_manager.expire(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", redis_manager.ONE_HOUR_TTL)
         finally:
             await QueueService.release_service_slot(service_name, slot_id)
     
@@ -129,14 +137,17 @@ async def start_queue_workers():
     
     _workers_running = True
     
-    # Start workers for each service should be 10% of concurrency load measurement
-    for i in range(int(settings.MAX_CONCURRENT_PDF * 0.10)):
+    # Start workers for each service (10% of concurrency load)
+    pdf_workers = max(1, int(settings.MAX_CONCURRENT_PDF * 0.10))
+    tts_workers = max(1, int(settings.MAX_CONCURRENT_TTS * 0.10))
+    
+    for i in range(pdf_workers):
         _worker_tasks.append(asyncio.create_task(queue_worker("pdf", i)))
     
-    for i in range(int(settings.MAX_CONCURRENT_TTS * 0.10)):
+    for i in range(tts_workers):
         _worker_tasks.append(asyncio.create_task(queue_worker("tts", i)))
     
-    logger.info(f"Started {len(_worker_tasks)} queue workers")
+    logger.info(f"Started {len(_worker_tasks)} queue workers (PDF: {pdf_workers}, TTS: {tts_workers})")
 
 
 async def stop_queue_workers():

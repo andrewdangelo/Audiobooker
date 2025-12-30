@@ -65,10 +65,11 @@ async def forward_or_queue(service_name: str, request: Request, path: str):
                 body = await request.body()
                 request_data["body"] = body.decode('utf-8', errors='ignore')
         
-        queue_id = await QueueService.queue_request(service_name, request_data)
-        
-        # Get queue position
+        # Get queue length BEFORE adding to get accurate position
         queue_length = await QueueService.get_queue_length(service_name)
+        
+        # Get quueue id
+        queue_id = await QueueService.queue_request(service_name, request_data)
         
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
@@ -76,7 +77,7 @@ async def forward_or_queue(service_name: str, request: Request, path: str):
                 "status": "queued",
                 "queue_id": queue_id,
                 "message": f"Request queued - service at capacity",
-                "queue_position": queue_length,
+                "queue_position": queue_length + 1,  # Position is current length + 1
                 "check_status_url": f"/queue/{queue_id}"
             }
         )
@@ -139,7 +140,7 @@ async def check_queue_status(queue_id: str):
     status_data = await QueueService.get_queue_status(queue_id)
     
     if not status_data:
-        raise HTTPException(status_code=404, detail="Queue ID not found")
+        raise HTTPException(status_code=404, detail="Queue ID not found or expired")
     
     response = {
         "queue_id": queue_id,
@@ -213,6 +214,21 @@ async def redis_inspect_all():
         "keys": results
     }
 
+@router.post("/redis/clear")
+async def redis_clear():
+    """Delete all keys from Redis"""
+    keys = await redis_manager.keys("*")
+    deleted_count = 0
+
+    for key in keys:
+        try:
+            await redis_manager.delete(key)
+            deleted_count += 1
+        except Exception:
+            pass  
+
+    return {"cleared": deleted_count, "message": "All Redis keys deleted"}
+
 # ==================== HEALTH & METRICS ====================
 
 @router.get("/health")
@@ -223,9 +239,9 @@ async def health_check():
     try:
         await redis_manager._ensure_connection()
         await redis_manager.ping()
-        
         redis_ok = True
-    except:
+    except Exception as e:
+        logger.error(f"Redis health check failed: {e}")
         redis_ok = False
     
     # Check services
@@ -235,15 +251,15 @@ async def health_check():
         async with httpx.AsyncClient(timeout=5) as client:
             pdf_response = await client.get(f"{settings.PDF_SERVICE_URL}/health/check_health")
             pdf_ok = pdf_response.status_code == 200
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"PDF service health check failed: {e}")
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             tts_response = await client.get(f"{settings.TTS_SERVICE_URL}/health/check_health")
             tts_ok = tts_response.status_code == 200
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"TTS service health check failed: {e}")
     
     # Get queue metrics
     pdf_queue = await QueueService.get_queue_length("pdf")
@@ -252,10 +268,16 @@ async def health_check():
     tts_active = await QueueService.get_active_count("tts")
     
     healthy = redis_ok and pdf_ok and tts_ok
-    unhealthy = ["[REDIS Service]" if not redis_ok else "", "[PDF Microservice]" if not pdf_ok else "", "[TTS Microservice]" if not tts_ok else ""]
+    unhealthy = []
+    if not redis_ok:
+        unhealthy.append("[REDIS Service]")
+    if not pdf_ok:
+        unhealthy.append("[PDF Microservice]")
+    if not tts_ok:
+        unhealthy.append("[TTS Microservice]")
     
     return {
-        "status": "healthy" if healthy else f"[CRITICAL]: Check on {' ,'.join([s for s in unhealthy if s])} failed",
+        "status": "healthy" if healthy else f"[CRITICAL]: Check on {', '.join(unhealthy)} failed",
         "services": {
             "redis": "ok" if redis_ok else "error",
             "pdf": "ok" if pdf_ok else "error",

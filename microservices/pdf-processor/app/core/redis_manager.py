@@ -53,8 +53,8 @@ class RedisManager(RedisKeys):
         if self.redis is None:
             try:
                 print("Redis not connected, connecting...")
-                import subprocess as sp
-                sp.run('wsl -d Ubuntu bash -c "sudo service redis-server start"', shell=True, capture_output=True)
+                # import subprocess as sp
+                # sp.run('wsl -d Ubuntu bash -c "sudo service redis-server start"', shell=True, capture_output=True)
                 await self.connect()
             except Exception as e:
                 print(f"Failed to connect to Redis: {str(e)}")
@@ -66,8 +66,8 @@ class RedisManager(RedisKeys):
         except Exception:
             print("Redis connection lost, reconnecting...")
             #TODO remove this way to start redis server and dedicate a vm for redis server or microservice. SUPER TEMPORARY FIX
-            import subprocess as sp
-            sp.run('wsl -d Ubuntu bash -c "sudo service redis-server start"', shell=True, capture_output=True)
+            # import subprocess as sp
+            # sp.run('wsl -d Ubuntu bash -c "sudo service redis-server start"', shell=True, capture_output=True)
             await self.connect()
     
     async def disconnect(self):

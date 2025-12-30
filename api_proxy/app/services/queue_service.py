@@ -32,8 +32,6 @@ class QueueService:
         key = f"{redis_manager.SERVICE_ACTIVE}:{service_name}"
         
         await redis_manager.sadd(key, slot_id)
-        #TODO setting redis expiration to 1 hour for now... THIS CAN BREAK SHIT, so either i remove or increase to take account of high processing requests
-        await redis_manager.expire(key, redis_manager.ONE_HOUR_TTL)  
         
         logger.info(f"Acquired {service_name} slot: {slot_id}")
         return slot_id
@@ -54,9 +52,8 @@ class QueueService:
         request_data["queued_at"] = datetime.now().isoformat()
         request_data["status"] = "queued"
         
-        # Storing DatA WITHOUT expiration #TODO comeback later and maybe adgust REQUEST_TIMEOUT
+        # StorinG REQUEST DATA (no expiration until completed/failed)
         await redis_manager.hset(f"{redis_manager.QUEUED_REQUEST}:{queue_id}", mapping=request_data)
-        # Don't set expiration here!
         
         # Add to processing queue
         await redis_manager.rpush(f"{redis_manager.QUEUE}:{service_name}", queue_id)
@@ -79,3 +76,10 @@ class QueueService:
     async def get_active_count(service_name: str) -> int:
         """Get number of active requests"""
         return await redis_manager.scard(f"{redis_manager.SERVICE_ACTIVE}:{service_name}")
+    
+    @staticmethod
+    async def cleanup_completed_request(queue_id: str):
+        """Clean up a completed/failed request from Redis"""
+        # Delete the hash containing request data
+        await redis_manager.delete(f"{redis_manager.QUEUED_REQUEST}:{queue_id}")
+        logger.info(f"Cleaned up request data for {queue_id}")
