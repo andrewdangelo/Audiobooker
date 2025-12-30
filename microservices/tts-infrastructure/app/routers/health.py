@@ -10,11 +10,11 @@ router = APIRouter()
 @router.get("/check_health", response_model=HealthResponse)
 async def health_check(request: Request):
     """Health check endpoint"""
-    main_app =  os.path.basename(os.getcwd())
+    main_app =  f"{os.path.basename(os.getcwd())} Microservice"
 
     return HealthResponse(
         status="healthy",
         service=main_app,
-        timestamp=datetime.utcnow(),
+        timestamp=f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}",
         version=request.app.__version__
     )

@@ -1,7 +1,7 @@
 """
 Text Chunking library
-
 """
+__author__ = "Mohammad Saifan"
 
 from typing import List, Dict, Any, Optional
 import re
@@ -36,7 +36,7 @@ class TextChunker:
         
         chunks = []
         start = 0
-        chunk_id = 0
+        chunk_id = 1
         
         while start < len(text):
             # Calculate end position
@@ -52,7 +52,7 @@ class TextChunker:
             
             # Try to break at sentence boundary
             chunk_end = self._find_sentence_boundary(text, end, chunk_size)
-            
+                        
             # Extract chunk text
             chunk_text = text[start:chunk_end].strip()
             
@@ -61,12 +61,9 @@ class TextChunker:
                 chunks.append(chunk)
                 chunk_id += 1
             
-            # Move to next chunk with overlap
-            start = chunk_end - overlap
-            
-            # Ensure we make progress
-            if start <= chunks[-1]["start_char"] if chunks else 0:
-                start = chunk_end
+            # Move to next chunk with overlap > 1
+            next_start = max(chunk_end - overlap, chunk_end - 1)
+            start = next_start
         
         return chunks
     
@@ -124,22 +121,20 @@ class TextChunker:
                 # Check if chunk overlaps with this page
                 if not (end_char <= page_info["start"] or start_char >= page_info["end"]):
                     page_numbers.append(page_info["page"])
-                
-        # CALLING TTS MICROSERVICE HERE Generate audio for the chunk
-        tts_response = await call_tts_service(
-            chunk_id=str(chunk_id),
-            text=text,
-            provider="elevenlabs",
-            voice_id="EXAVITQu4vr4xnSDxMaL",
-            model_id="eleven_multilingual_v2",
-            voice_settings={
-                "stability": 0.5,
-                "similarity_boost": 0.75
-                }
-        )
         
-        breakpoint()
-                
+        # CALLING TTS MICROSERVICE HERE Generate audio for the chunk #TODO: DELETE later
+        # tts_response = await call_tts_service(
+        #     chunk_id=str(chunk_id),
+        #     text=text,
+        #     provider="elevenlabs",
+        #     voice_id="EXAVITQu4vr4xnSDxMaL",
+        #     model_id="eleven_multilingual_v2",
+        #     voice_settings={
+        #         "stability": 0.5,
+        #         "similarity_boost": 0.75
+        #         }
+        # )
+
         return {
             "chunk_id": chunk_id,
             "text": text,
@@ -151,7 +146,7 @@ class TextChunker:
 
 
 async def call_tts_service(chunk_id, text, provider, voice_id, model_id, voice_settings):
-    TTS_SERVICE_URL = "http://127.0.0.1:8002/api/v1/tts/tts/generate"
+    TTS_SERVICE_URL = "http://127.0.0.1:8002/api/v1/tts/tts_processor/generate"
     async with httpx.AsyncClient() as client:
         payload = {
             "chunk_id": chunk_id,
@@ -162,7 +157,25 @@ async def call_tts_service(chunk_id, text, provider, voice_id, model_id, voice_s
             "voice_settings": voice_settings
         }
 
-        response = await client.post(TTS_SERVICE_URL, json=payload)
-        response.raise_for_status()
-
-        return response.json()
+        try:
+            response = await client.post(TTS_SERVICE_URL, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            # Log the error but continue processing
+            print(f"TTS service failed for chunk {chunk_id}: {e}")
+            return {
+                "chunk_id": chunk_id,
+                "status": "failed",
+                "error": str(e),
+                "audio_url": None
+            }
+        except Exception as e:
+            # Catch network errors, timeouts, etc.
+            print(f"TTS service error for chunk {chunk_id}: {e}")
+            return {
+                "chunk_id": chunk_id,
+                "status": "error",
+                "error": str(e),
+                "audio_url": None
+            }

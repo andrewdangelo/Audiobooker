@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PDF API Tutorial</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 40px;
+      max-width: 900px;
+    }
+
+    h2 {
+      margin-bottom: 5px;
+    }
+
+    select, input, textarea, button {
+      width: 100%;
+      margin-top: 10px;
+      padding: 8px;
+    }
+
+    textarea {
+      height: 120px;
+      font-family: monospace;
+    }
+
+    .section {
+      margin-top: 30px;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+    }
+
+    pre {
+      margin-top: 20px;
+      background: #f5f5f5;
+      padding: 15px;
+      white-space: pre-wrap;
+    }
+
+    button {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+<h2>📄 PDF Microservice API Tutorial</h2>
+<p>This page demonstrates how to use the PDF endpoints through the API Proxy.</p>
+
+<div class="section">
+  <label><strong>Select Endpoint</strong></label>
+  <select id="endpointSelect" onchange="switchEndpoint()">
+    <option value="upload">Upload New PDF</option>
+    <option value="process">Process PDF</option>
+    <option value="getJob">Get Job Status By ID (FROM REDIS)</option>
+    <option value="getAllJobs">Get ALL Jobs (FROM REDIS)</option>
+  </select>
+</div>
+
+<!-- ================= UPLOAD ================= -->
+<div id="uploadSection" class="section">
+  <h3>1️⃣ Upload PDF</h3>
+  <p><code>POST {PDF-API_PROXY-POST-PATH}/pdf_processor/upload_new_pdf</code></p>
+
+  <input type="file" id="fileInput" accept="application/pdf" />
+  <button onclick="uploadPdf()">Upload PDF</button>
+</div>
+
+<!-- ================= PROCESS ================= -->
+<div id="processSection" class="section" style="display:none;">
+  <h3>2️⃣ Process PDF</h3>
+  <p><code>POST {PDF-API_PROXY-POST-PATH}/pdf_processor/process_pdf</code></p>
+
+  <label>JSON Payload</label>
+  <textarea id="jsonPayload">
+{
+  "r2_pdf_path": "audiobook_uploads/c9f183db-4c5f-4db5-a7f8-ff98575e5f5e/pdf/TheOutsiders.pdf",
+  "chunk_size": 1000,
+  "chunk_overlap": 200,
+  "output_format": "json",
+  "metadata": {}
+}
+  </textarea>
+
+  <button onclick="processPdf()">Process PDF</button>
+</div>
+
+<!-- ================= GET JOB ================= -->
+<div id="getJobSection" class="section" style="display:none;">
+  <h3>3️⃣ Get Job Status</h3>
+  <p><code>GET {PDF-API_PROXY-GET-PATH}/pdf_processor/job/&lt;job_id&gt;</code></p>
+
+  <label>Job ID</label>
+  <input type="text" id="jobIdInput" placeholder="Enter job ID here" />
+  <button onclick="getJobStatus()">Get Job Status</button>
+</div>
+
+<!-- ================= GET ALL JOBS ================= -->
+<div id="getAllJobsSection" class="section" style="display:none;">
+  <h3>4️⃣ Get ALL Jobs (FROM REDIS)</h3>
+  <p><code>GET {PDF-API_PROXY-GET-PATH}/pdf_processor/get_all_jobs</code></p>
+  <button onclick="getAllJobs()">Get All Jobs</button>
+</div>
+
+<pre id="output">Response will appear here...</pre>
+
+<script>
+  const BASE_URL = "http://127.0.0.1:8009/pdf_processor/pdf_processor";
+  const REDIS_URL = "http://127.0.0.1:8029/api/v1/pdf_processor";
+
+  function switchEndpoint() {
+    const selected = document.getElementById("endpointSelect").value;
+
+    document.getElementById("uploadSection").style.display = selected === "upload" ? "block" : "none";
+    document.getElementById("processSection").style.display = selected === "process" ? "block" : 'none';
+    document.getElementById("getJobSection").style.display = selected === "getJob" ? "block" : 'none';
+    document.getElementById("getAllJobsSection").style.display = selected === "getAllJobs" ? "block" : 'none';
+  }
+
+  async function uploadPdf() {
+    const output = document.getElementById("output");
+    const fileInput = document.getElementById("fileInput");
+
+    if (!fileInput.files.length) {
+      output.textContent = "❌ Please select a PDF file";
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", fileInput.files[0]);
+
+    try {
+      const res = await fetch(`${BASE_URL}/upload_new_pdf`, { method: "POST", body: formData });
+      const text = await res.text();
+      output.textContent = `Status: ${res.status}\n\n${text}`;
+    } catch (err) {
+      output.textContent = "❌ Error: " + err;
+    }
+  }
+
+  async function processPdf() {
+    const output = document.getElementById("output");
+    const payload = document.getElementById("jsonPayload").value;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      output.textContent = "❌ Invalid JSON payload";
+      return;
+    }
+
+    try {
+      const res = await fetch(`${BASE_URL}/process_pdf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "accept": "application/json" },
+        body: JSON.stringify(parsed)
+      });
+
+      const text = await res.text();
+      output.textContent = `Status: ${res.status}\n\n${text}`;
+    } catch (err) {
+      output.textContent = "❌ Error: " + err;
+    }
+  }
+
+  async function getJobStatus() {
+    const output = document.getElementById("output");
+    const jobId = document.getElementById("jobIdInput").value.trim();
+
+    if (!jobId) {
+      output.textContent = "❌ Please enter a Job ID";
+      return;
+    }
+
+    try {
+      const res = await fetch(`${REDIS_URL}/job/${jobId}`, {
+        method: "GET",
+        headers: { "accept": "application/json" }
+      });
+
+      const data = await res.json();
+      output.textContent = `Status: ${res.status}\n\n${JSON.stringify(data, null, 2)}`;
+    } catch (err) {
+      output.textContent = "❌ Error: " + err;
+    }
+  }
+
+  async function getAllJobs() {
+    const output = document.getElementById("output");
+
+    try {
+      const res = await fetch(`${REDIS_URL}/get_all_jobs`, {
+        method: "GET",
+        headers: { "accept": "application/json" }
+      });
+
+      const data = await res.json();
+      output.textContent = `Status: ${res.status}\n\n${JSON.stringify(data, null, 2)}`;
+    } catch (err) {
+      output.textContent = "❌ Error: " + err;
+    }
+  }
+</script>
+
+</body>
+</html>

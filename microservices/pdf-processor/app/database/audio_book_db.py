@@ -4,56 +4,68 @@ Audiobook Service
 """
 
 from sqlalchemy.orm import Session
-from app.models.audiobook import Audiobook
-from typing import List, Optional, Dict, Any
+from typing import Dict, Any
 
 
 class AudiobookDBService:
-    """Service for managing audiobooks"""
-    
-    def __init__(self, db: Session):
+    """Generic DB service for audiobook-related models"""
+
+    def __init__(self, db: Session, model):
         self.db = db
-    
-    def create(self, audiobook_data: Dict[str, Any]) -> Audiobook:
-        """Create a new audiobook"""
-        audiobook = Audiobook(**audiobook_data)
-        self.db.add(audiobook)
-        self.db.commit()
-        self.db.refresh(audiobook)
-        return audiobook
-    
-    def get_by_id(self, audiobook_id: str) -> Optional[Audiobook]:
-        """Get audiobook by ID"""
-        return self.db.query(Audiobook).filter(Audiobook.id == audiobook_id).first()
-    
-    def get_all(self, skip: int = 0, limit: int = 20) -> List[Audiobook]:
-        """Get all audiobooks with pagination"""
-        return self.db.query(Audiobook).offset(skip).limit(limit).all()
-    
-    def count(self) -> int:
-        """Get total count of audiobooks"""
-        return self.db.query(Audiobook).count()
-    
-    def update(self, audiobook_id: str, update_data: Dict[str, Any]) -> Optional[Audiobook]:
-        """Update an audiobook"""
-        audiobook = self.get_by_id(audiobook_id)
-        if not audiobook:
+        self.model = model
+
+    def create(self, data: Dict[str, Any]):
+        instance = self.model(**data)
+        try:
+            self.db.add(instance)
+            self.db.commit()
+            self.db.refresh(instance)
+        except Exception as e:
+            # In the case you need to update row of same r2_key
+            self.db.rollback()
+            item_id = data.get("r2_key")
+            if not item_id:
+                raise ValueError("r2_key is required for update on conflict.")
+            else:
+                existing = self.db.query(self.model).filter(self.model.r2_key == item_id).first()
+                
+                for key, value in data.items():
+                    if hasattr(existing, key) and value is not None:
+                        setattr(existing, key, value)
+                
+                self.db.commit()
+                self.db.refresh(existing)
+        
+        return instance
+
+    def get_by_id(self, item_id: str):
+        return self.db.query(self.model).filter(self.model.r2_key == item_id).first()
+
+    def get_all(self, skip=0, limit=20):
+        return self.db.query(self.model).offset(skip).limit(limit).all()
+
+    def count(self):
+        return self.db.query(self.model).count()
+
+    def update(self, item_id: str, update_data: Dict[str, Any]):
+        instance = self.get_by_id(item_id)
+        if not instance:
             return None
-        
+
         for key, value in update_data.items():
-            if hasattr(audiobook, key) and value is not None:
-                setattr(audiobook, key, value)
-        
+            if hasattr(instance, key) and value is not None:
+                setattr(instance, key, value)
+
         self.db.commit()
-        self.db.refresh(audiobook)
-        return audiobook
-    
-    def delete(self, audiobook_id: str) -> bool:
-        """Delete an audiobook"""
-        audiobook = self.get_by_id(audiobook_id)
-        if not audiobook:
+        self.db.refresh(instance)
+        return instance
+
+    def delete(self, item_id: str) -> bool:
+        instance = self.get_by_id(item_id)
+        if not instance:
             return False
-        
-        self.db.delete(audiobook)
+
+        self.db.delete(instance)
         self.db.commit()
         return True
+

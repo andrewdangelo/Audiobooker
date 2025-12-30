@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     TEST_VERSION: str = Field(default="Check ENV Version...", description="Application test version")
     
     # Endpoints:
-    API_V1_PREFIX: str = "/api/v1/"
+    API_V1_PREFIX: str = "/api/v1/pdf"
     
     # Database
     DATABASE_URL: str = "postgresql://audiobooker:password@localhost:5432/audiobooker_db"

@@ -38,3 +38,9 @@ urllib3
 uvicorn
 watchfiles
 websockets
+pdfminer.six
+pymupdf
+pytesseract
+easyocr
+Pillow
+redis

@@ -38,13 +38,8 @@ async def generate_tts(request: TTSRequest):
     Generate TTS for a single chunk
     """
     try:
-        audio_path, duration = await tts_service.generate_audio(
-            chunk_id=request.chunk_id,
-            text=request.text,
-            provider_name=request.provider,
-            voice_id=request.voice_id,
-            model_id=request.model_id,
-            voice_settings=request.voice_settings)
+        audio_path, duration = await tts_service.generate_audio(chunk_id=request.chunk_id, text=request.text, provider_name=request.provider,
+                                voice_id=request.voice_id, model_id=request.model_id, voice_settings=request.voice_settings)
 
         return TTSResponse(
             chunk_id=request.chunk_id,
@@ -67,7 +62,6 @@ async def generate_batch_tts(request: TTSBatchRequest):
         elif request.json_file_path:
             with open(request.json_file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # Assume data is a list or has a 'chunks' key
                 chunks = data if isinstance(data, list) else data.get('chunks', [])
         else:
             raise HTTPException(
@@ -76,13 +70,8 @@ async def generate_batch_tts(request: TTSBatchRequest):
             )
         
         # Process batch
-        results = await tts_service.process_batch(
-            chunks=chunks,
-            provider_name=request.provider,
-            voice_id=request.voice_id,
-            model_id=request.model_id,
-            voice_settings=request.voice_settings
-        )
+        results = await tts_service.process_batch(chunks=chunks, provider_name=request.provider, voice_id=request.voice_id,
+                                            model_id=request.model_id, voice_settings=request.voice_settings)
         
         # Convert results to response models
         tts_responses = [
@@ -110,12 +99,7 @@ async def generate_batch_tts(request: TTSBatchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/upload-json", response_model=TTSBatchResponse)
-async def upload_json_and_generate(
-    file: UploadFile = File(...),
-    provider: str = "elevenlabs",
-    voice_id: Optional[str] = None,
-    model_id: Optional[str] = None
-):
+async def upload_json_and_generate(file: UploadFile = File(...), provider: str = "elevenlabs", voice_id: Optional[str] = None, model_id: Optional[str] = None):
     """
     Upload a JSON file and generate TTS for all chunks
     """
@@ -127,12 +111,7 @@ async def upload_json_and_generate(
         chunks = data if isinstance(data, list) else data.get('chunks', [])
         
         # Process batch
-        results = await tts_service.process_batch(
-            chunks=chunks,
-            provider_name=provider,
-            voice_id=voice_id,
-            model_id=model_id
-        )
+        results = await tts_service.process_batch(chunks=chunks, provider_name=provider, voice_id=voice_id, model_id=model_id)
         
         tts_responses = [
             TTSResponse(
@@ -148,22 +127,18 @@ async def upload_json_and_generate(
         successful = sum(1 for r in results if r["status"] == "success")
         failed = sum(1 for r in results if r["status"] == "failed")
         
-        return TTSBatchResponse(
-            batch_id=str(uuid.uuid4()),
-            total_chunks=len(chunks),
-            successful=successful,
-            failed=failed,
-            results=tts_responses
-        )
+        return TTSBatchResponse(batch_id=str(uuid.uuid4()), total_chunks=len(chunks), successful=successful, failed=failed, results=tts_responses)
+    
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON file")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/audio/{chunk_id}")
-async def get_audio(chunk_id: str):
+async def get_single_audio_from_chunk_id(chunk_id: str):
     """
-    Download generated audio file by chunk_id
+    Download generated audio file by chunk_id.
+    For example: Input: 1 ---> Should download audio from audio_output/1.mp3 
     """
     audio_path = f"audio_output/{chunk_id}.mp3"
     try:
@@ -178,7 +153,7 @@ async def get_audio(chunk_id: str):
 @router.get("/voices/{provider}")
 async def get_voices(provider: str = "elevenlabs"):
     """
-    Get available voices for a provider
+    Get available voices for given provider.
     """
     try:
         voices = await tts_service.get_available_voices(provider_name=provider)

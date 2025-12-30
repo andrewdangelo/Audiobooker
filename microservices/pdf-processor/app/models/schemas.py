@@ -20,7 +20,7 @@ class OutputFormat(str, Enum):
 class ProcessPDFRequest(BaseModel):
     """Request model for PDF processing"""
     
-    r2_key: str = Field(
+    r2_pdf_path: str = Field(
         ...,
         description="R2 storage key for the PDF file",
         example="7e807a6e-f77d-4f9f-957e-9c395f1d3a8c/pdf/catcher.pdf"
@@ -28,7 +28,7 @@ class ProcessPDFRequest(BaseModel):
     chunk_size: int = Field(
         default=1000,
         description="Size of text chunks in characters",
-        ge=100,
+        ge=10,
         le=5000
     )
     chunk_overlap: int = Field(
@@ -46,13 +46,13 @@ class ProcessPDFRequest(BaseModel):
         description="Additional metadata to attach"
     )
     
-    @validator("r2_key")
-    def validate_r2_key(cls, v):
+    @validator("r2_pdf_path")
+    def validate_r2_pdf_path(cls, v):
         """Validate R2 key format"""
         if not v or not v.strip():
-            raise ValueError("r2_key cannot be empty")
+            raise ValueError("r2_pdf_path cannot be empty")
         if not v.endswith(".pdf"):
-            raise ValueError("r2_key must point to a PDF file (.pdf extension)")
+            raise ValueError("r2_pdf_path must point to a PDF file (.pdf extension)")
         return v.strip()
     
     @validator("chunk_overlap")
@@ -94,7 +94,7 @@ class HealthResponse(BaseModel):
     
     status: str = Field(..., description="Service health status")
     service: str = Field(..., description="Service name")
-    timestamp: datetime = Field(..., description="Current timestamp")
+    timestamp: str = Field(..., description="Current timestamp")
     version: str = Field(..., description="Service version")
 
 

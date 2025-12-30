@@ -1,9 +1,15 @@
-from fastapi import (FastAPI, HTTPException, BackgroundTasks, status, APIRouter)
-from app.models.schemas import (ProcessPDFRequest, ProcessPDFResponse, JobStatusResponse, HealthResponse)
+"""
+PDF Processor Router
+"""
+__author__ = "Mohammad Saifan"
+
+from fastapi import (HTTPException, BackgroundTasks, status, APIRouter, UploadFile, File)
+
+from app.models.schemas import (ProcessPDFRequest, ProcessPDFResponse, JobStatusResponse)
+from app.models.audiobook import (Audiobook)
 from app.database import (audio_book_db, database)
 from app.services import (pdf_processor_service, r2_service)
 
-from typing import Dict, Any
 from datetime import datetime
 import logging
 
@@ -11,11 +17,77 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Initialize services
-r2_service = r2_service.R2Service()
+r2_svc = r2_service.R2Service()
 pdf_processor = pdf_processor_service.PDFProcessorService()
 
-# In-memory job tracking (use Redis in production)
-job_store: Dict[str, Dict[str, Any]] = {}
+
+@router.post("/upload_new_pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    """
+    Upload a PDF file for conversion
+    
+    - **file**: PDF file to upload (max 50MB)
+    
+    Returns audiobook record with storage location
+    """
+    try:
+        # Validate file extension
+        if not file.filename or not file.filename.endswith('.pdf'):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only PDF files are allowed")
+        
+        # Validate filename is a string
+        if not isinstance(file.filename, str):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid filename type: {type(file.filename).__name__}")
+        
+        # Read file content
+        logger.info(f"Processing upload: {file.filename}")
+        file_content = await file.read()
+        file_size = len(file_content)
+        
+        # Validate file size (50MB) #TODO make configurable later
+        if file_size > 52428800:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"File size exceeds maximum allowed size of 50MB")
+        
+        # Sanitize filename and generate R2 key and send up to R2
+        r2_path, r2_key, r2_book_name, r2_file_type = r2_svc.generate_key(file_name=file.filename)
+       
+        # Upload to R2
+        output_key = f"{r2_path}"
+        send_up_to_r2 = r2_svc.upload_processed_data(key=output_key, data=file_content)        
+               
+        # Preparing data as dictionary
+        audiobook_data = {
+            "r2_key": r2_key,
+            "title": r2_book_name,  
+            "pdf_path": r2_path,
+            "status": "COMPLETED"
+        }
+        
+        logger.info(f"Creating database record")
+        db_gen = database.get_db()
+        db = next(db_gen)
+        audiobook_service = audio_book_db.AudiobookDBService(db, Audiobook)
+        audiobook = audiobook_service.create(audiobook_data)
+        
+        logger.info(f"Upload complete - ID: {audiobook.r2_key}")
+        
+        # Return audiobook details
+        return {
+            "id": str(audiobook.r2_key),
+            "title": audiobook.title,
+            "pdf_path": audiobook.pdf_path,
+            "r2_key": send_up_to_r2["key"],
+            "r2_bucket": send_up_to_r2["bucket"],
+            "status": audiobook.status,
+            "message": "File uploaded successfully to R2 and database"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Upload failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to process upload: {str(e)}")
+
 
 @router.post("/process_pdf", response_model=ProcessPDFResponse, status_code=status.HTTP_202_ACCEPTED)
 async def process_pdf(request: ProcessPDFRequest, background_tasks: BackgroundTasks):
@@ -24,35 +96,34 @@ async def process_pdf(request: ProcessPDFRequest, background_tasks: BackgroundTa
     
     Args:
         request: PDF processing request with R2 key and options
-        background_tasks: FastAPI background tasks for async processing
+        background_tasks: FastAPI background tasks for async processing. Queue will be controlled from api proxy.
     
     Returns:
         Job information with job_id for status tracking
     """
     try:
-        logger.info(f"Received PDF processing request for key: {request.r2_key}")
+        logger.info(f"Received PDF processing request for key: {request.r2_pdf_path}")
+        
         # Verify file exists in R2
-        if not r2_service.file_exists(request.r2_key):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"PDF not found in R2: {request.r2_key}"
-            )
+        if not r2_svc.file_exists(request.r2_pdf_path):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"PDF not found in R2: {request.r2_pdf_path}")
         
         # Generate job ID
-        job_id = f"job_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{request.r2_key.replace('/', '_')}"
+        job_id = f"job_{request.r2_pdf_path.replace('/', '_')}"
         
-        # Initialize job tracking
-        job_store[job_id] = {
+        # Initialize job in Redis
+        await pdf_processor.create_job(job_id, {
             "job_id": job_id,
             "status": "pending",
-            "r2_key": request.r2_key,
-            "created_at": datetime.utcnow().isoformat(),
+            "r2_key": request.r2_pdf_path,
+            "created_at": f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}",
             "progress": 0,
             "message": "Job queued for processing"
-        }
+        })
         
         # Add processing task to background
-        background_tasks.add_task(process_pdf_task, job_id=job_id, r2_key=request.r2_key, chunk_size=request.chunk_size, chunk_overlap=request.chunk_overlap, output_format=request.output_format)
+        background_tasks.add_task(pdf_processor.process_pdf_task, job_id=job_id, r2_key=request.r2_pdf_path, chunk_size=request.chunk_size,
+                            chunk_overlap=request.chunk_overlap, output_format=request.output_format)
         
         logger.info(f"Job {job_id} queued for processing")
         
@@ -60,90 +131,50 @@ async def process_pdf(request: ProcessPDFRequest, background_tasks: BackgroundTa
             job_id=job_id,
             status="accepted",
             message="PDF processing job accepted",
-            r2_key=request.r2_key
+            r2_key=request.r2_pdf_path
         )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing PDF request: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process PDF: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to process PDF: {str(e)}")
 
-async def process_pdf_task(job_id: str, r2_key: str, chunk_size: int, chunk_overlap: int, output_format: str):
+
+@router.get("/job/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(job_id: str):
     """
-    Background task for processing PDF
+    Get the status of a processing job
+    
+    Args:
+        job_id: Unique job identifier from redis
+    
+    Returns:
+        Current job status and details
+    """
+    job = await pdf_processor.get_job_by_id(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job {job_id} not found")
+    
+    return JobStatusResponse(**job)
+
+@router.get("/get_all_jobs")
+async def get_jobs():
+    """
+    Get the status of a processing job from redis
     
     Args:
         job_id: Unique job identifier
-        r2_key: R2 storage key for the PDF
-        chunk_size: Size of text chunks
-        chunk_overlap: Overlap between chunks
-        output_format: Output format (json, text, markdown)
+    
+    Returns:
+        Current job status and details
     """
-    try:
-        logger.info(f"Starting PDF processing for job {job_id}")
-        
-        # Update job status
-        job_store[job_id]["status"] = "processing"
-        job_store[job_id]["message"] = "Downloading PDF from R2"
-        job_store[job_id]["progress"] = 10
-        
-        # Download PDF from R2
-        pdf_data = r2_service.download_file(r2_key)
-        
-        job_store[job_id]["message"] = "Extracting text from PDF"
-        job_store[job_id]["progress"] = 30
-        
-        # Process PDF
-        result = await pdf_processor.process_pdf(pdf_data=pdf_data, chunk_size=chunk_size, chunk_overlap=chunk_overlap, output_format=output_format)
-        
-        job_store[job_id]["progress"] = 80
-        job_store[job_id]["message"] = "Uploading processed data to R2"
-        
-        # Upload results back to R2 after getting final json output
-        output_key = f"processed/{r2_key.replace('.pdf', '')}_processed.json"
-        r2_service.upload_processed_data(output_key, result)
-        
-        # Create audiobook record in database
-        logger.info(f"Creating database record")
-        db_gen = database.get_db()
-        db = next(db_gen)
-        audiobook_service = audio_book_db.AudiobookDBService(db)
-        
-        # Preparing data as dictionary
-        audiobook_data = {
-            "id": job_id,
-            "title": r2_key.split("/")[-1],  # Remove .pdf extension so you can attain the name of the book
-            "pdf_path": r2_key,  # r2://bucket/key format
-            "status": "COMPLETED"
+    job = await pdf_processor.get_all_jobs()
+    
+    if len(job) == 0:
+        return {
+            "JOBS": "NO JOBS FOUND"
         }
-        
-        audiobook = audiobook_service.create(audiobook_data)
-        
-        logger.info(f"Upload complete - ID: {audiobook.id}")
-        
-        # Update job with results
-        job_store[job_id]["status"] = "completed"
-        job_store[job_id]["progress"] = 100
-        job_store[job_id]["message"] = "Processing completed successfully"
-        job_store[job_id]["completed_at"] = datetime.utcnow().isoformat()
-        job_store[job_id]["result"] = {
-            "output_key": output_key,
-            "total_chunks": result.get("total_chunks", 0),
-            "total_pages": result.get("total_pages", 0),
-            "total_characters": result.get("total_characters", 0)
-        }
-        
-        logger.info(f"Job {job_id} completed successfully")
-        
-    except Exception as e:
-        logger.error(f"Job {job_id} failed: {str(e)}", exc_info=True)
-        
-        job_store[job_id]["status"] = "failed"
-        job_store[job_id]["progress"] = 0
-        job_store[job_id]["message"] = "Processing failed"
-        job_store[job_id]["completed_at"] = datetime.utcnow().isoformat()
-        job_store[job_id]["error"] = str(e)
+    else:
+        return job

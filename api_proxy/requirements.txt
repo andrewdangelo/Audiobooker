@@ -1,12 +1,17 @@
-# Core dependencies
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
-pydantic==2.5.0
-pydantic-settings==2.1.0
-
-# HTTP client for proxying requests
-httpx==0.25.2
-
-# Utilities
-python-dotenv==1.0.0
+fastapi
+uvicorn
+pydantic
+httpx
+redis
+slowapi
+python-dotenv
+psycopg2-binary
+sqlalchemy
+boto3
+aiofiles
+jinja2
+python-multipart
+pydantic
+pydantic-settings
+requests
+asyncpg

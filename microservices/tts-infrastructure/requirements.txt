@@ -34,3 +34,8 @@ urllib3
 uvicorn
 watchfiles
 websockets
+pydub
+ffmpeg-python
+soundfile
+numpy
+redis

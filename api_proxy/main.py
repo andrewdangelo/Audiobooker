@@ -1,148 +1,84 @@
 """
-API Proxy - FastAPI Application Entry Point
-
-This is the main API Gateway that bridges the frontend applications (Web UI, Mobile UI)
-with the internal microservices (TTS, PDF Processing, Backend, Auth) and external APIs
-(Gutenberg, ElevenLabs).
-
-Architecture:
-    Frontend APPs (Web UI, Mobile UI)
-          ↓
-    API Proxy (FastAPI Gateway)
-          ↓
-    ├── Internal Microservices (TTS, PDF Processing, Backend, Auth)
-    ├── Data Storage (PostgreSQL, CloudFlare R2)
-    └── External APIs (Gutenberg, ElevenLabs)
+API Proxy - Micro 
 """
-
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+import uvicorn
 import logging
-import time
-from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
-from config.settings import settings
-from app.routers import health
+from app.core.config_settings import settings
+from app.core.logging_config import setup_logging
+from app.core.redis_manager import redis_manager
+from app.core.rate_limiter import limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO if not settings.DEBUG else logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+from app.routers import proxy_router
+from app.services.queue_worker import start_queue_workers, stop_queue_workers
+
+# Setup logging service
+setup_logging()
 logger = logging.getLogger(__name__)
 
+# ==================== APP INITIALIZATION ====================
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan events"""
-    # Startup
-    logger.info(f"Starting {settings.APP_NAME} in {settings.ENVIRONMENT} mode")
-    logger.info(f"API Documentation available at: /docs")
-    yield
-    # Shutdown
-    logger.info("Shutting down API Gateway")
-
-
-# Create FastAPI app instance
 app = FastAPI(
-    title=settings.APP_NAME,
-    description="API Gateway bridging frontend applications with microservices",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    lifespan=lifespan,
+    title="API Proxy For Audiobooker Microservices",
+    description="Rate limiting and Request queueing",
+    version="0.0.1"
 )
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
-
-# Add GZip compression for responses
-app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-
-# Request logging middleware
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log all incoming requests and their processing time"""
-    start_time = time.time()
-    
-    # Process request
-    response = await call_next(request)
-    
-    # Calculate processing time
-    process_time = time.time() - start_time
-    
-    # Log request details
-    logger.info(
-        f"{request.method} {request.url.path} "
-        f"- Status: {response.status_code} "
-        f"- Time: {process_time:.3f}s"
-    )
-    
-    # Add processing time to response headers
-    response.headers["X-Process-Time"] = str(process_time)
-    
-    return response
-
-
-# Global exception handler
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Handle uncaught exceptions"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "detail": str(exc) if settings.DEBUG else "An unexpected error occurred"
-        }
-    )
-
+# Add rate limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Include routers
-app.include_router(health.router, tags=["Health"])
-# Add more routers here as you create them
-# app.include_router(
-#     pdf.router,
-#     prefix=f"{settings.API_V1_PREFIX}/pdf",
-#     tags=["PDF Processing"]
-# )
+app.include_router(proxy_router.router)
 
+# ==================== LIFECYCLE EVENTS ====================
 
-@app.get("/")
-async def root():
-    """
-    Root endpoint - API Gateway information
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup"""
+    logger.info("Starting API Proxy...")
     
-    Returns basic information about the API Gateway including version,
-    environment, and available documentation links.
-    """
-    return {
-        "name": settings.APP_NAME,
-        "version": "1.0.0",
-        "environment": settings.ENVIRONMENT,
-        "status": "running",
-        "docs": "/docs",
-        "redoc": "/redoc"
-    }
+    # Connect to Redis
+    await redis_manager._ensure_connection()
+    logger.info("Redis connected")
+    
+    # Start queue workers
+    await start_queue_workers()
+    
+    logger.info("Queue workers started")
+    logger.info("API Proxy ready!")
 
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    logger.info("Shutting down API Proxy...")
+    
+    # Stop queue workers
+    await stop_queue_workers()
+    
+    # Disconnect Redis
+    await redis_manager.disconnect()
+    
+    logger.info("API Proxy shut down")
+
+
+# ==================== GLOBAL ERROR HANDLER ====================
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """Catch-all exception handler"""
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+
+# ==================== RUN ====================
 
 if __name__ == "__main__":
-    import uvicorn
-    
-    uvicorn.run(
-        "main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.DEBUG,
-        log_level="debug" if settings.DEBUG else "info",
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=settings.PORT, reload=settings.ENVIRONMENT == "develfopment", log_level=settings.LOG_LEVEL.lower())

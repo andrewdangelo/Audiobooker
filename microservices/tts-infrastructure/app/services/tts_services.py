@@ -10,13 +10,7 @@ class TTSProvider(ABC):
     """Abstract base class for TTS providers"""
     
     @abstractmethod
-    async def generate_speech(
-        self,
-        text: str,
-        voice_id: str,
-        model_id: Optional[str] = None,
-        voice_settings: Optional[dict] = None
-    ) -> bytes:
+    async def generate_speech(self, text: str, voice_id: str, model_id: Optional[str] = None, voice_settings: Optional[dict] = None) -> bytes:
         """Generate speech from text"""
         #TODO add more to base class in case of future needs
         pass
@@ -124,12 +118,7 @@ class TTSService:
             raise ValueError(f"Provider '{provider_name}' not registered")
         
         # Generate audio
-        audio_bytes = await provider.generate_speech(
-            text=text,
-            voice_id=voice_id,
-            model_id=model_id,
-            voice_settings=voice_settings
-        )
+        audio_bytes = await provider.generate_speech(text=text, voice_id=voice_id, model_id=model_id, voice_settings=voice_settings)
         
         # Save to file
         file_path = self.output_dir / f"{chunk_id}.mp3"
@@ -153,14 +142,7 @@ class TTSService:
         async def process_chunk(chunk: dict):
             async with semaphore:
                 try:
-                    audio_path, duration = await self.generate_audio(
-                        chunk_id=chunk["chunk_id"],
-                        text=chunk["text"],
-                        provider_name=provider_name,
-                        voice_id=voice_id,
-                        model_id=model_id,
-                        voice_settings=voice_settings
-                    )
+                    audio_path, duration = await self.generate_audio(chunk_id=chunk["chunk_id"], text=chunk["text"], provider_name=provider_name, voice_id=voice_id, model_id=model_id, voice_settings=voice_settings)
                     return {
                         "chunk_id": chunk["chunk_id"],
                         "status": "success",
@@ -177,6 +159,7 @@ class TTSService:
                         "error": str(e)
                     }
         
+        # Running all chunk processes concurrently with semaphore limit
         results = await asyncio.gather(*[process_chunk(chunk) for chunk in chunks])
         return results
     
