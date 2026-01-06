@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+pydantic
+httpx
+redis
+slowapi
+python-dotenv
+psycopg2-binary
+sqlalchemy
+boto3
+aiofiles
+jinja2
+python-multipart
+pydantic
+pydantic-settings
+requests
+asyncpg
