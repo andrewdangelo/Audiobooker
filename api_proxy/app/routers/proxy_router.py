@@ -84,8 +84,8 @@ async def forward_or_queue(service_name: str, request: Request, path: str):
 
 
 # ======================================== PROXY PDF ROUTES ========================================
-
 _pdf_service_name = "pdf"
+
 # GET proxy for PDF
 @router.get("/pdf_processor/{path:path}")
 @limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
