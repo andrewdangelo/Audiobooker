@@ -18,7 +18,8 @@ import {
   Home,
   Upload,
   Settings,
-  HelpCircle
+  HelpCircle,
+  List
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -73,6 +74,14 @@ const secondaryNavItems = [
     label: 'Upload', 
     href: '/upload',
     description: 'Upload new audiobooks'
+  },
+  { 
+    icon: List, 
+    label: 'My Listings', 
+    href: '/my-listings',
+    description: 'Manage your store listings',
+    permission: 'PUBLISH_AUDIOBOOK'
+    // TODO: Only show to Publisher+ users
   },
   { 
     icon: Settings, 

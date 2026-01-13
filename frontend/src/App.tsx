@@ -17,6 +17,10 @@ import PlayerPopout from './pages/PlayerPopout'
 import Login from './pages/Login'
 import Signup from './pages/Signup'
 import ForgotPassword from './pages/ForgotPassword'
+import Settings from './pages/Settings'
+import PermissionsDemo from './pages/PermissionsDemo'
+import PublishToStore from './pages/PublishToStore'
+import MyListings from './pages/MyListings'
 import { AppLayout } from './components/layout/AppLayout'
 import './App.css'
 
@@ -37,6 +41,8 @@ function App() {
           {/* Default route redirects to dashboard */}
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/permissions-demo" element={<PermissionsDemo />} />
           <Route path="/library" element={<Library />} />
           <Route path="/store" element={<Store />} />
           <Route path="/store/book/:id" element={<StoreBookDetail />} />
@@ -44,6 +50,8 @@ function App() {
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/book/:id" element={<BookDetail />} />
           <Route path="/upload" element={<Upload />} />
+          <Route path="/publish/:audiobookId" element={<PublishToStore />} />
+          <Route path="/my-listings" element={<MyListings />} />
           <Route path="/preview/:previewId" element={<AudiobookPreview />} />
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/purchase" element={<Purchase />} />
