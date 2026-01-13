@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
+import { authService } from '@/services/authService'
 
 interface FormErrors {
   fullName?: string
@@ -115,16 +116,30 @@ export default function Signup() {
     setErrors({})
     
     try {
-      // TODO: Replace with actual API call
-      console.log('Signup attempt:', { fullName, email })
+      // Parse full name into first and last name
+      const nameParts = fullName.trim().split(/\s+/)
+      const first_name = nameParts[0]
+      const last_name = nameParts.length > 1 ? nameParts.slice(1).join(' ') : nameParts[0]
       
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      // Call auth service to create account
+      const response = await authService.signup({
+        email,
+        password,
+        first_name,
+        last_name
+      })
       
-      // On success, navigate to login or dashboard
-      navigate('/login')
-    } catch (error) {
-      setErrors({ general: 'An error occurred. Please try again.' })
+      // Store tokens
+      authService.storeTokens(response.access_token, response.refresh_token)
+      
+      console.log('Signup successful:', response.user)
+      
+      // Navigate to dashboard
+      navigate('/dashboard')
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.detail || 'An error occurred during signup. Please try again.'
+      setErrors({ general: errorMessage })
+      console.error('Signup error:', error)
     } finally {
       setIsLoading(false)
     }

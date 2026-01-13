@@ -132,6 +132,38 @@ async def proxy_tts_infra_delete(request: Request, path: str):
     """Forward /tts_infra/* requests - queue if overloaded"""
     return await forward_or_queue(_tts_service_name, request, path)
 
+
+# ======================================== PROXY AUTH ROUTES ========================================
+_auth_service_name = "auth"
+
+# GET proxy for Auth (profile, settings, etc.)
+@router.get("/auth/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_auth_get(request: Request, path: str):
+    """Forward /auth/* requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
+
+# POST proxy for Auth (signup, login, logout, refresh, etc.)
+@router.post("/auth/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_auth_post(request: Request, path: str):
+    """Forward /auth/* requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
+
+# PUT proxy for Auth (update profile, settings)
+@router.put("/auth/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_auth_put(request: Request, path: str):
+    """Forward /auth/* requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
+
+# DELETE proxy for Auth (delete account)
+@router.delete("/auth/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_auth_delete(request: Request, path: str):
+    """Forward /auth/* requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
+
 # ==================== QUEUE STATUS and Redis QUEUE ====================
 
 @router.get("/queue/{queue_id}")
@@ -245,7 +277,7 @@ async def health_check():
         redis_ok = False
     
     # Check services
-    pdf_ok = tts_ok = False
+    pdf_ok = tts_ok = auth_ok = False
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -261,13 +293,22 @@ async def health_check():
     except Exception as e:
         logger.error(f"TTS service health check failed: {e}")
     
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            auth_response = await client.get(f"{settings.AUTH_SERVICE_URL}/health/")
+            auth_ok = auth_response.status_code == 200
+    except Exception as e:
+        logger.error(f"Auth service health check failed: {e}")
+    
     # Get queue metrics
     pdf_queue = await QueueService.get_queue_length("pdf")
     tts_queue = await QueueService.get_queue_length("tts")
+    auth_queue = await QueueService.get_queue_length("auth")
     pdf_active = await QueueService.get_active_count("pdf")
     tts_active = await QueueService.get_active_count("tts")
+    auth_active = await QueueService.get_active_count("auth")
     
-    healthy = redis_ok and pdf_ok and tts_ok
+    healthy = redis_ok and pdf_ok and tts_ok and auth_ok
     unhealthy = []
     if not redis_ok:
         unhealthy.append("[REDIS Service]")
@@ -275,13 +316,16 @@ async def health_check():
         unhealthy.append("[PDF Microservice]")
     if not tts_ok:
         unhealthy.append("[TTS Microservice]")
+    if not auth_ok:
+        unhealthy.append("[AUTH Microservice]")
     
     return {
         "status": "healthy" if healthy else f"[CRITICAL]: Check on {', '.join(unhealthy)} failed",
         "services": {
             "redis": "ok" if redis_ok else "error",
             "pdf": "ok" if pdf_ok else "error",
-            "tts": "ok" if tts_ok else "error"
+            "tts": "ok" if tts_ok else "error",
+            "auth": "ok" if auth_ok else "error"
         },
         "queues": {
             "pdf": {
@@ -293,6 +337,11 @@ async def health_check():
                 "queued": tts_queue,
                 "active": tts_active,
                 "max": settings.MAX_CONCURRENT_TTS
+            },
+            "auth": {
+                "queued": auth_queue,
+                "active": auth_active,
+                "max": settings.MAX_CONCURRENT_AUTH
             }
         }
     }
@@ -303,8 +352,10 @@ async def get_metrics():
     """Get detailed metrics"""
     pdf_queue = await QueueService.get_queue_length("pdf")
     tts_queue = await QueueService.get_queue_length("tts")
+    auth_queue = await QueueService.get_queue_length("auth")
     pdf_active = await QueueService.get_active_count("pdf")
     tts_active = await QueueService.get_active_count("tts")
+    auth_active = await QueueService.get_active_count("auth")
     
     return {
         "pdf_service": {
@@ -318,5 +369,11 @@ async def get_metrics():
             "active_requests": tts_active,
             "max_concurrent": settings.MAX_CONCURRENT_TTS,
             "available_slots": settings.MAX_CONCURRENT_TTS - tts_active
+        },
+        "auth_service": {
+            "queued_requests": auth_queue,
+            "active_requests": auth_active,
+            "max_concurrent": settings.MAX_CONCURRENT_AUTH,
+            "available_slots": settings.MAX_CONCURRENT_AUTH - auth_active
         }
     }

@@ -18,8 +18,9 @@ class RequestService:
     def get_service_url(service_name: str) -> str:
         """Get the base URL for a service"""
         service_map = {
-            "pdf":settings.PDF_SERVICE_URL,
-            "tts":settings.TTS_SERVICE_URL
+            "pdf": settings.PDF_SERVICE_URL,
+            "tts": settings.TTS_SERVICE_URL,
+            "auth": settings.AUTH_SERVICE_URL
         }
         return (service_map.get(service_name.lower()))
     

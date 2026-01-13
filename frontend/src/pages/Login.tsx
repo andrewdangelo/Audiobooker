@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
+import { authService } from '@/services/authService'
 
 interface FormErrors {
   email?: string
@@ -61,16 +62,24 @@ export default function Login() {
     setErrors({})
     
     try {
-      // TODO: Replace with actual API call
-      console.log('Login attempt:', { email, rememberMe })
+      // Call auth service API via proxy
+      const response = await authService.login({ email, password })
       
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      // Store tokens
+      authService.storeTokens(response.access_token, response.refresh_token)
+      
+      console.log('Login successful:', {
+        user: response.user,
+        email: response.user.email,
+        token: response.access_token.substring(0, 20) + '...'
+      })
       
       // On success, navigate to dashboard
       navigate('/dashboard')
-    } catch (error) {
-      setErrors({ general: 'Invalid email or password. Please try again.' })
+    } catch (error: any) {
+      console.error('Login error:', error)
+      const errorMessage = error.response?.data?.detail || 'Invalid email or password. Please try again.'
+      setErrors({ general: errorMessage })
     } finally {
       setIsLoading(false)
     }
