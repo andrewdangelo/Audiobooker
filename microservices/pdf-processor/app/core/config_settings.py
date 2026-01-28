@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     REDIS_DB: int = Field(default=0, description="Redis database number")
     REDIS_PASSWORD: Optional[str] = Field(default=None, description="Redis password")
     
+    # LLM Configuration (for speaker chunking)
+    OPENAI_API_KEY: Optional[str] = Field(default=None, description="OpenAI API key for LLM chunking")
+    LLM_MODEL: str = Field(default="gpt-4o", description="OpenAI model for speaker chunking")
+    LLM_CONCURRENCY: int = Field(default=1, description="Number of concurrent LLM requests (1 recommended for rate limits)")
+    LLM_MAX_CHARS_PER_WINDOW: int = Field(default=15000, description="Maximum characters per LLM processing window (reduced for rate limits)")
+    LLM_DISCOVERY_CHARS: int = Field(default=20000, description="Characters to use for character discovery")
+    LLM_DELAY_BETWEEN_REQUESTS: float = Field(default=3.0, description="Seconds to wait between LLM requests")
+    ENABLE_LLM_CHUNKING: bool = Field(default=False, description="Enable automatic LLM-based speaker chunking")
+    
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         """Validate environment values"""

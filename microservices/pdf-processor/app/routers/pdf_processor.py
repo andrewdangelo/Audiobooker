@@ -116,7 +116,7 @@ async def process_pdf(request: ProcessPDFRequest, background_tasks: BackgroundTa
             "job_id": job_id,
             "status": "pending",
             "r2_key": request.r2_pdf_path,
-            "created_at": f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}",
+            "created_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
             "progress": 0,
             "message": "Job queued for processing"
         })

@@ -44,3 +44,4 @@ pytesseract
 easyocr
 Pillow
 redis
+openai

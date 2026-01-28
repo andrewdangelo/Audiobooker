@@ -15,6 +15,6 @@ async def health_check(request: Request):
     return HealthResponse(
         status="healthy",
         service=main_app,
-        timestamp=f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}",
+        timestamp=f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
         version=request.app.__version__
     )

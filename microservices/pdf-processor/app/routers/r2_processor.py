@@ -49,7 +49,7 @@ async def upload_processed_data(key: str, payload: Dict[str, Any] = Body(..., ex
                 "chunks": chunks,
                 "metadata": extracted_data["metadata"],
                 "processing_time": round(processing_time, 2),
-                "created_at": f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}"
+                "created_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}"
     """
     try:
         response = r2.upload_processed_data(key, payload)

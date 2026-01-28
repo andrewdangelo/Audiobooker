@@ -7,6 +7,7 @@ __author__ = "Mohammad Saifan"
 
 import io
 import time
+import asyncio
 from typing import (Dict, Any, List)
 from datetime import datetime
 
@@ -21,9 +22,11 @@ from PyPDF2.errors import PdfReadError
 
 from app.core.logging_config import Logger
 from app.core.redis_manager import redis_manager
+from app.core.config_settings import settings
 from app.utils.chunker import TextChunker
 
 from app.services import r2_service
+from app.services.llm_speaker_chunker import SpeakerChunker
 from app.database import (audio_book_db, database)
 from app.models.audiobook import Processed_Audiobook
 
@@ -120,6 +123,61 @@ class PDFProcessorService(Logger):
             output_key = f"processed_audiobooks/{job_id.replace('.pdf', '')}_processed.json"
             r2_svc.upload_processed_data(key=output_key, data=result)
             
+            # LLM Speaker Chunking (if enabled)
+            script_output_key = None
+            if settings.ENABLE_LLM_CHUNKING and settings.OPENAI_API_KEY:
+                try:
+                    self.logger.info(f"Starting LLM speaker chunking for job {job_id}")
+                    await self.update_job(job_id, {
+                        "progress": 85,
+                        "message": "Processing speaker attribution with LLM"
+                    })
+                    
+                    # Initialize LLM chunker
+                    llm_chunker = SpeakerChunker(
+                        api_key=settings.OPENAI_API_KEY,
+                        model=settings.LLM_MODEL
+                    )
+                    
+                    # Track progress for job updates
+                    llm_progress = {"last_update": None}
+                    
+                    def progress_callback(progress_info: dict):
+                        """Store progress info for logging"""
+                        llm_progress["last_update"] = progress_info
+                        self.logger.info(
+                            f"LLM Progress: {progress_info.get('windows_completed', 0)}/{progress_info.get('total_windows', 0)} windows, "
+                            f"~{progress_info.get('estimated_remaining_formatted', 'calculating...')} remaining"
+                        )
+                    
+                    # Process with LLM (using rate-limit-safe defaults)
+                    # Run in thread to avoid blocking the event loop
+                    script_result = await asyncio.to_thread(
+                        llm_chunker.chunk_by_speaker_from_processed_data,
+                        processed_data=result,
+                        discovery_chars=settings.LLM_DISCOVERY_CHARS,
+                        max_chars_per_window=settings.LLM_MAX_CHARS_PER_WINDOW,
+                        concurrency=settings.LLM_CONCURRENCY,
+                        delay_between_requests=settings.LLM_DELAY_BETWEEN_REQUESTS,
+                        progress_callback=progress_callback
+                    )
+                    
+                    # Upload script to R2
+                    script_output_key = f"processed_audiobooks/{job_id.replace('.pdf', '')}_script.json"
+                    r2_svc.upload_processed_data(key=script_output_key, data=script_result)
+                    
+                    self.logger.info(f"LLM speaker chunking completed - Script lines: {len(script_result.get('script', []))}")
+                    
+                    await self.update_job(job_id, {
+                        "progress": 90,
+                        "message": "LLM speaker chunking completed"
+                    })
+                    
+                except Exception as e:
+                    self.logger.error(f"LLM speaker chunking failed for job {job_id}: {str(e)}", exc_info=True)
+                    # Continue processing even if LLM chunking fails
+                    script_output_key = None
+            
             # Create audiobook record in database
             self.logger.info(f"Creating database record for job {job_id}")
             db_gen = database.get_db()
@@ -139,17 +197,24 @@ class PDFProcessorService(Logger):
             self.logger.info(f"Upload complete - ID: {audiobook.r2_key}")
             
             # Update job with completion results
+            job_result = {
+                "output_key": output_key,
+                "total_chunks": result.get("total_chunks", 0),
+                "total_pages": result.get("total_pages", 0),
+                "total_characters": result.get("total_characters", 0)
+            }
+            
+            # Add script output if LLM chunking was performed
+            if script_output_key:
+                job_result["script_output_key"] = script_output_key
+                job_result["llm_chunking_enabled"] = True
+            
             await self.update_job(job_id, {
                 "status": "completed",
                 "progress": 100,
                 "message": "Processing completed successfully",
-                "completed_at": f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}",
-                "result": {
-                    "output_key": output_key,
-                    "total_chunks": result.get("total_chunks", 0),
-                    "total_pages": result.get("total_pages", 0),
-                    "total_characters": result.get("total_characters", 0)
-                }
+                "completed_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
+                "result": job_result
             })
             
             self.logger.info(f"Job {job_id} completed successfully")
@@ -162,7 +227,7 @@ class PDFProcessorService(Logger):
                 "status": "failed",
                 "progress": 0,
                 "message": "Processing failed",
-                "completed_at": f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}",
+                "completed_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
                 "error": str(e)
             })
     
@@ -209,7 +274,7 @@ class PDFProcessorService(Logger):
                 "chunks": chunks,
                 "metadata": extracted_data["metadata"],
                 "processing_time": round(processing_time, 2),
-                "created_at": f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}"
+                "created_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}"
             }
             
             self.logger.info(
