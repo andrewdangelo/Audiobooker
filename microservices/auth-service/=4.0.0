@@ -1,0 +1,4 @@
+Collecting bcrypt
+  Using cached bcrypt-5.0.0-cp39-abi3-win_amd64.whl (150 kB)
+Installing collected packages: bcrypt
+Successfully installed bcrypt-5.0.0

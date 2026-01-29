@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { 
   Search, 
   Bell, 
@@ -31,38 +31,30 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Separator } from '@/components/ui/separator'
-import { useAppSelector } from '@/store/hooks'
+import { useAppSelector, useAppDispatch } from '@/store/hooks'
 import { selectCartItemCount } from '@/store/slices/cartSlice'
+import { selectCurrentUser, selectUserDisplayName, logout } from '@/store/slices/authSlice'
+import { authService } from '@/services/authService'
 
-// TODO: API Integration Points
-// - GET /api/v1/users/me - Fetch current user profile
-// - GET /api/v1/notifications - Fetch user notifications
-// - POST /api/v1/auth/logout - Logout user
-// - GET /api/v1/search?q={query} - Search audiobooks
-
-interface NavbarProps {
-  // User data would come from auth context/API in production
-  user?: {
-    name: string
-    email: string
-    avatarUrl?: string
-    credits?: number
-  }
-}
-
-export function Navbar({ user }: NavbarProps) {
+export function Navbar() {
   const [searchQuery, setSearchQuery] = useState('')
   const [isDarkMode, setIsDarkMode] = useState(false)
+  const navigate = useNavigate()
+  const dispatch = useAppDispatch()
   
   // Cart item count from Redux
   const cartItemCount = useAppSelector(selectCartItemCount)
   
-  // Mock user data - replace with actual auth context
-  const currentUser = user || {
-    name: 'John Doe',
-    email: 'john@example.com',
-    avatarUrl: undefined,
-    credits: 25 // TODO: Fetch from API - GET /api/v1/users/me/credits
+  // User data from Redux auth state
+  const user = useAppSelector(selectCurrentUser)
+  const displayName = useAppSelector(selectUserDisplayName)
+  
+  // Computed user display values
+  const currentUser = {
+    name: displayName,
+    email: user?.email || '',
+    avatarUrl: user?.avatarUrl,
+    credits: user?.credits || 0
   }
   
   // TODO: Implement actual search functionality
@@ -72,11 +64,18 @@ export function Navbar({ user }: NavbarProps) {
     // TODO: API call to /api/v1/search?q={searchQuery}
   }
   
-  // TODO: Implement actual logout
-  const handleLogout = () => {
-    console.log('Logout clicked')
-    // TODO: API call to /api/v1/auth/logout
-    // Then redirect to /login
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      // Clear tokens from localStorage
+      authService.clearTokens()
+      // Dispatch logout action to Redux
+      dispatch(logout())
+      // Navigate to login page
+      navigate('/login')
+    } catch (error) {
+      console.error('Logout error:', error)
+    }
   }
   
   // TODO: Implement actual theme toggle with context

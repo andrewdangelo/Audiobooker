@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     TEST_VERSION: str = "Check ENV for test version"
     API_V1_PREFIX: str = "/api/v1/audiobooker_proxy"
     
-    # CORS Settings
+    # CORS Settings - includes frontend dev server (5173), frontend production (3000)
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
     
     # Redis
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
     
-    # Microservices
+    # Microservices - Auth service now at /api/v1/auth (not nested /auth/auth)
     PDF_SERVICE_URL: str = "http://localhost:8029/api/v1/pdf"
     TTS_SERVICE_URL: str = "http://localhost:8002/api/v1/tts"
     AUTH_SERVICE_URL: str = "http://localhost:8003/api/v1/auth"

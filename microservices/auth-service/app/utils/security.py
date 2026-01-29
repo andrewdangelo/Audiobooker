@@ -2,24 +2,40 @@
 JWT and Security Utilities
 """
 
+import hashlib
+import base64
+import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from app.core.config_settings import settings
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _prehash_password(password: str) -> bytes:
+    """
+    Pre-hash password with SHA-256 to handle bcrypt's 72-byte limit.
+    This allows passwords of any length while maintaining security.
+    Returns base64-encoded hash (44 chars, well under 72 bytes).
+    """
+    sha256_hash = hashlib.sha256(password.encode('utf-8')).digest()
+    return base64.b64encode(sha256_hash)
 
 
 def hash_password(password: str) -> str:
-    """Hash a password using bcrypt"""
-    return pwd_context.hash(password)
+    """Hash a password using bcrypt with SHA-256 pre-hashing"""
+    prehashed = _prehash_password(password)
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(prehashed, salt)
+    return hashed.decode('utf-8')
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash"""
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        prehashed = _prehash_password(plain_password)
+        return bcrypt.checkpw(prehashed, hashed_password.encode('utf-8'))
+    except Exception:
+        return False
 
 
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:

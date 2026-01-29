@@ -2,7 +2,7 @@
  * Auth Service
  * 
  * Handles authentication requests to the auth microservice via API proxy
- * All requests go through http://localhost:8000/auth/*
+ * All requests go through http://localhost:8009/auth/*
  */
 
 import api from './api'
@@ -21,7 +21,7 @@ export interface SignupData {
 
 export interface AuthResponse {
   user: {
-    id: number
+    id: string
     email: string
     first_name: string
     last_name?: string
@@ -49,6 +49,7 @@ export interface UpdateProfileData {
  */
 class AuthService {
   private readonly AUTH_PREFIX = '/auth'
+  private readonly ACCOUNTS_PREFIX = '/auth/accounts'
 
   /**
    * Login with email and password
@@ -79,9 +80,7 @@ class AuthService {
     const response = await api.get<AuthResponse['user']>(
       `${this.AUTH_PREFIX}/me`,
       {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
+        params: { token }
       }
     )
     return response.data
@@ -118,7 +117,7 @@ class AuthService {
    */
   async getProfile(token: string): Promise<AuthResponse['user']> {
     const response = await api.get<AuthResponse['user']>(
-      `${this.AUTH_PREFIX}/../accounts/profile`,
+      `${this.ACCOUNTS_PREFIX}/profile`,
       {
         headers: {
           Authorization: `Bearer ${token}`
@@ -133,7 +132,7 @@ class AuthService {
    */
   async updateProfile(token: string, data: UpdateProfileData): Promise<AuthResponse['user']> {
     const response = await api.put<AuthResponse['user']>(
-      `${this.AUTH_PREFIX}/../accounts/profile`,
+      `${this.ACCOUNTS_PREFIX}/profile`,
       data,
       {
         headers: {
@@ -149,7 +148,7 @@ class AuthService {
    */
   async changePassword(token: string, oldPassword: string, newPassword: string): Promise<void> {
     await api.post(
-      `${this.AUTH_PREFIX}/../accounts/change-password`,
+      `${this.ACCOUNTS_PREFIX}/change-password`,
       {
         old_password: oldPassword,
         new_password: newPassword
@@ -167,7 +166,7 @@ class AuthService {
    */
   async getAccountSettings(token: string): Promise<any> {
     const response = await api.get(
-      `${this.AUTH_PREFIX}/../accounts/settings`,
+      `${this.ACCOUNTS_PREFIX}/settings`,
       {
         headers: {
           Authorization: `Bearer ${token}`
@@ -182,7 +181,7 @@ class AuthService {
    */
   async updateAccountSettings(token: string, settings: any): Promise<any> {
     const response = await api.put(
-      `${this.AUTH_PREFIX}/../accounts/settings`,
+      `${this.ACCOUNTS_PREFIX}/settings`,
       settings,
       {
         headers: {
@@ -198,7 +197,7 @@ class AuthService {
    */
   async deleteAccount(token: string): Promise<void> {
     await api.delete(
-      `${this.AUTH_PREFIX}/../accounts/account`,
+      `${this.ACCOUNTS_PREFIX}/account`,
       {
         headers: {
           Authorization: `Bearer ${token}`

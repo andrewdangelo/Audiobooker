@@ -14,6 +14,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { authService } from '@/services/authService'
+import { useAppDispatch } from '@/store/hooks'
+import { login } from '@/store/slices/authSlice'
 
 interface FormErrors {
   fullName?: string
@@ -32,6 +34,7 @@ interface PasswordStrength {
 
 export default function Signup() {
   const navigate = useNavigate()
+  const dispatch = useAppDispatch()
   
   // Form state
   const [fullName, setFullName] = useState('')
@@ -129,8 +132,23 @@ export default function Signup() {
         last_name
       })
       
-      // Store tokens
+      // Store tokens in localStorage
       authService.storeTokens(response.access_token, response.refresh_token)
+      
+      // Dispatch login action to Redux store
+      dispatch(login({
+        token: response.access_token,
+        refreshToken: response.refresh_token,
+        user: {
+          id: response.user.id,
+          email: response.user.email,
+          first_name: response.user.first_name,
+          last_name: response.user.last_name,
+          username: response.user.username,
+          is_active: response.user.is_active,
+          auth_provider: response.user.auth_provider,
+        }
+      }))
       
       console.log('Signup successful:', response.user)
       

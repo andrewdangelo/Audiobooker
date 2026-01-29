@@ -2,7 +2,7 @@
 Pydantic Schemas for API requests/responses
 """
 
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
 from datetime import datetime
 from enum import Enum
@@ -23,7 +23,8 @@ class SignupRequest(BaseModel):
     last_name: Optional[str] = None
     username: Optional[str] = None
     
-    @validator('password')
+    @field_validator('password')
+    @classmethod
     def validate_password(cls, v):
         if not any(char.isupper() for char in v):
             raise ValueError('Password must contain at least one uppercase letter')
@@ -66,7 +67,8 @@ class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str = Field(..., min_length=8)
     
-    @validator('new_password')
+    @field_validator('new_password')
+    @classmethod
     def validate_password(cls, v):
         if not any(char.isupper() for char in v):
             raise ValueError('Password must contain at least one uppercase letter')
@@ -85,20 +87,38 @@ class UpdateAccountSettingsRequest(BaseModel):
 # Response Models
 class UserResponse(BaseModel):
     """User response model"""
-    id: int
+    id: str  # MongoDB ObjectId as string
     email: str
-    username: Optional[str]
-    first_name: Optional[str]
-    last_name: Optional[str]
-    profile_picture_url: Optional[str]
-    is_active: bool
-    is_verified: bool
-    auth_provider: AuthProvider
-    created_at: datetime
-    last_login: Optional[datetime]
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    is_active: bool = True
+    is_verified: bool = False
+    auth_provider: AuthProvider = AuthProvider.LOCAL
+    created_at: Optional[datetime] = None
+    last_login: Optional[datetime] = None
     
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
+    
+    @classmethod
+    def from_mongo(cls, user_doc: dict) -> "UserResponse":
+        """Create UserResponse from MongoDB document"""
+        return cls(
+            id=str(user_doc.get("_id", "")),
+            email=user_doc.get("email", ""),
+            username=user_doc.get("username"),
+            first_name=user_doc.get("first_name"),
+            last_name=user_doc.get("last_name"),
+            profile_picture_url=user_doc.get("profile_picture_url"),
+            is_active=user_doc.get("is_active", True),
+            is_verified=user_doc.get("is_verified", False),
+            auth_provider=user_doc.get("auth_provider", AuthProvider.LOCAL),
+            created_at=user_doc.get("created_at"),
+            last_login=user_doc.get("last_login")
+        )
 
 
 class TokenResponse(BaseModel):
@@ -119,15 +139,16 @@ class AuthResponse(BaseModel):
 
 class AccountSettingsResponse(BaseModel):
     """Account settings response"""
-    user_id: int
-    two_factor_enabled: bool
-    email_notifications: bool
-    marketing_emails: bool
-    created_at: datetime
-    updated_at: datetime
+    user_id: str  # MongoDB ObjectId as string
+    two_factor_enabled: bool = False
+    email_notifications: bool = True
+    marketing_emails: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 
 class HealthCheckResponse(BaseModel):

@@ -6,7 +6,7 @@
  */
 
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Eye, EyeOff, Loader2, Mail, Lock } from 'lucide-react'
 import AuthLayout from '@/components/auth/AuthLayout'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { authService } from '@/services/authService'
+import { useAppDispatch } from '@/store/hooks'
+import { login } from '@/store/slices/authSlice'
 
 interface FormErrors {
   email?: string
@@ -23,6 +25,11 @@ interface FormErrors {
 
 export default function Login() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const dispatch = useAppDispatch()
+  
+  // Get the redirect path from state (set by ProtectedRoute)
+  const from = location.state?.from?.pathname || '/dashboard'
   
   // Form state
   const [email, setEmail] = useState('')
@@ -65,8 +72,23 @@ export default function Login() {
       // Call auth service API via proxy
       const response = await authService.login({ email, password })
       
-      // Store tokens
+      // Store tokens in localStorage
       authService.storeTokens(response.access_token, response.refresh_token)
+      
+      // Dispatch login action to Redux store
+      dispatch(login({
+        token: response.access_token,
+        refreshToken: response.refresh_token,
+        user: {
+          id: response.user.id,
+          email: response.user.email,
+          first_name: response.user.first_name,
+          last_name: response.user.last_name,
+          username: response.user.username,
+          is_active: response.user.is_active,
+          auth_provider: response.user.auth_provider,
+        }
+      }))
       
       console.log('Login successful:', {
         user: response.user,
@@ -74,8 +96,8 @@ export default function Login() {
         token: response.access_token.substring(0, 20) + '...'
       })
       
-      // On success, navigate to dashboard
-      navigate('/dashboard')
+      // Navigate to the intended page or dashboard
+      navigate(from, { replace: true })
     } catch (error: any) {
       console.error('Login error:', error)
       const errorMessage = error.response?.data?.detail || 'Invalid email or password. Please try again.'

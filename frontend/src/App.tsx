@@ -22,12 +22,16 @@ import PermissionsDemo from './pages/PermissionsDemo'
 import PublishToStore from './pages/PublishToStore'
 import MyListings from './pages/MyListings'
 import { AppLayout } from './components/layout/AppLayout'
+import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import './App.css'
 
 function App() {
   return (
     <Router>
       <Routes>
+        {/* Default route - redirect to login */}
+        <Route path="/" element={<Navigate to="/login" replace />} />
+        
         {/* Auth routes - no sidebar/navbar for clean auth UI */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
@@ -37,9 +41,11 @@ function App() {
         <Route path="/player-popout" element={<PlayerPopout />} />
         
         {/* Authenticated routes - all use AppLayout with sidebar/navbar */}
-        <Route element={<AppLayout />}>
-          {/* Default route redirects to dashboard */}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route element={
+          <ProtectedRoute>
+            <AppLayout />
+          </ProtectedRoute>
+        }>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/permissions-demo" element={<PermissionsDemo />} />

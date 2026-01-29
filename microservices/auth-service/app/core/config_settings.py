@@ -22,19 +22,25 @@ class Settings(BaseSettings):
     # Endpoints
     API_V1_PREFIX: str = "/api/v1/auth"
     
-    # Database
-    DATABASE_URL: str = Field(default="sqlite:///./auth_service.db", description="Database connection URL")
+    # MongoDB Configuration
+    MONGODB_URL: str = Field(default="mongodb://localhost:27017", description="MongoDB connection URL")
+    MONGODB_DB_NAME: str = Field(default="audiobooker_auth", description="MongoDB database name")
+    MONGODB_MAX_POOL_SIZE: int = Field(default=10, description="Maximum connection pool size")
+    MONGODB_MIN_POOL_SIZE: int = Field(default=1, description="Minimum connection pool size")
+    
+    # Legacy Database URL (deprecated, kept for compatibility)
+    DATABASE_URL: str = Field(default="mongodb://localhost:27017", description="Database connection URL")
     
     # JWT Configuration
-    SECRET_KEY: str = Field(..., description="Secret key for JWT encoding")
+    SECRET_KEY: str = Field(default="your-secret-key-change-in-production", description="Secret key for JWT encoding")
     ALGORITHM: str = Field(default="HS256", description="Algorithm for JWT encoding")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, description="Access token expiration time in minutes")
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, description="Refresh token expiration time in days")
     
     # Google OAuth Configuration
-    GOOGLE_CLIENT_ID: str = Field(..., description="Google OAuth Client ID")
-    GOOGLE_CLIENT_SECRET: str = Field(..., description="Google OAuth Client Secret")
-    GOOGLE_REDIRECT_URI: str = Field(..., description="Google OAuth Redirect URI")
+    GOOGLE_CLIENT_ID: str = Field(default="", description="Google OAuth Client ID")
+    GOOGLE_CLIENT_SECRET: str = Field(default="", description="Google OAuth Client Secret")
+    GOOGLE_REDIRECT_URI: str = Field(default="", description="Google OAuth Redirect URI")
     
     # CORS
     CORS_ORIGINS: List[str] = Field(

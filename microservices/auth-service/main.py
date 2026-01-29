@@ -3,6 +3,7 @@ Authentication Microservice - Main Entry Point
 
 FastAPI-based microservice for user authentication and account management.
 Supports local authentication and Google OAuth integration.
+Uses MongoDB for data persistence.
 """
 
 __author__ = "Auth Service Team"
@@ -16,8 +17,10 @@ from contextlib import asynccontextmanager
 
 from app.core.config_settings import settings
 from app.core.logging_config import setup_logging
-from app.database.database import init_db
-from app.routers import health, auth, accounts
+from app.database.mongodb import MongoDB
+from app.routers import health
+from app.routers.auth_mongo import router as auth_router
+from app.routers.accounts_mongo import router as accounts_router
 
 # Setup logging
 setup_logging()
@@ -30,15 +33,17 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Auth Service...")
     try:
-        init_db()
-        logger.info("Database initialized successfully")
+        await MongoDB.connect()
+        logger.info("MongoDB connected successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
+        logger.error(f"Failed to connect to MongoDB: {str(e)}")
+        raise
     
     yield
     
     # Shutdown
     logger.info("Shutting down Auth Service...")
+    await MongoDB.disconnect()
 
 
 # Initialize FastAPI app
@@ -82,13 +87,13 @@ app.include_router(
 )
 
 app.include_router(
-    auth.router,
-    prefix=f"{settings.API_V1_PREFIX}/auth",
+    auth_router,
+    prefix=f"{settings.API_V1_PREFIX}",
     tags=["-AUTH-"]
 )
 
 app.include_router(
-    accounts.router,
+    accounts_router,
     prefix=f"{settings.API_V1_PREFIX}/accounts",
     tags=["-ACCOUNTS-"]
 )
