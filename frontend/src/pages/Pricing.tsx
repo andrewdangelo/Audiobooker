@@ -1,10 +1,25 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Check, Zap, Star } from 'lucide-react';
+import { Check, Zap, Star, Loader2, AlertCircle } from 'lucide-react';
+import { useAppDispatch, useAppSelector } from '@/store/hooks';
+import { selectCurrentUser } from '@/store/slices/authSlice';
+import { 
+  selectIsSubscribed, 
+  selectSubscriptionPlan, 
+  selectSubscriptionStatus,
+  purchaseSubscription,
+  selectSubscription,
+} from '@/store/slices/subscriptionSlice';
+import { 
+  SubscriptionBadge, 
+  SubscriptionStatusCard, 
+  AlreadySubscribedAlert 
+} from '@/components/subscription/SubscriptionComponents';
+import { toast } from 'sonner';
 
 // TODO: API Integration
 // GET /api/v1/pricing/plans - Fetch available plans
@@ -31,8 +46,19 @@ interface CreditPackage {
 
 export default function Pricing() {
   const navigate = useNavigate();
+  const dispatch = useAppDispatch();
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
   const [creditType, setCreditType] = useState<'basic' | 'premium'>('basic');
+  const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
+  const [showAlreadySubscribed, setShowAlreadySubscribed] = useState(false);
+  const [alreadySubscribedMessage, setAlreadySubscribedMessage] = useState('');
+  
+  // Redux selectors
+  const user = useAppSelector(selectCurrentUser);
+  const isSubscribed = useAppSelector(selectIsSubscribed);
+  const currentPlan = useAppSelector(selectSubscriptionPlan);
+  const subscriptionStatus = useAppSelector(selectSubscriptionStatus);
+  const subscription = useAppSelector(selectSubscription);
 
   // TODO: Replace with API call
   const plans: PricingPlan[] = [
@@ -88,9 +114,61 @@ export default function Pricing() {
     { id: 'premium-10', credits: 10, price: 229.99 }
   ];
 
-  const handleSelectPlan = (planId: string) => {
-    // Navigate to purchase page with plan details
-    navigate(`/purchase?type=plan&id=${planId}&cycle=${billingCycle}`);
+  const handleSelectPlan = async (planId: string) => {
+    // Check if user is logged in
+    if (!user?.id) {
+      toast.error('Please log in to subscribe');
+      navigate('/login?redirect=/pricing');
+      return;
+    }
+    
+    // Check if already subscribed (guard)
+    if (isSubscribed) {
+      if (currentPlan === planId) {
+        // Same plan
+        setAlreadySubscribedMessage(
+          `You are already subscribed to the ${currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1)} plan. ` +
+          `Your subscription is active until ${subscription.currentPeriodEnd ? new Date(subscription.currentPeriodEnd).toLocaleDateString() : 'your next billing date'}.`
+        );
+        setShowAlreadySubscribed(true);
+        return;
+      } else {
+        // Different plan
+        setAlreadySubscribedMessage(
+          `You are currently subscribed to the ${currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1)} plan. ` +
+          `Please manage your current subscription in Settings before switching plans.`
+        );
+        setShowAlreadySubscribed(true);
+        return;
+      }
+    }
+    
+    // Process subscription purchase
+    setPurchaseLoading(planId);
+    
+    try {
+      const result = await dispatch(purchaseSubscription({
+        userId: user.id,
+        plan: planId as 'basic' | 'premium',
+        billingCycle: billingCycle,
+      })).unwrap();
+      
+      if (result.already_subscribed) {
+        setAlreadySubscribedMessage(result.message);
+        setShowAlreadySubscribed(true);
+      } else {
+        toast.success('Successfully subscribed!', {
+          description: result.message,
+        });
+        navigate('/credits');
+      }
+    } catch (error: any) {
+      toast.error('Subscription failed', {
+        description: error || 'Please try again',
+      });
+    } finally {
+      setPurchaseLoading(null);
+    }
   };
 
   const handleBuyCreditPack = (packId: string) => {
@@ -117,7 +195,27 @@ export default function Pricing() {
         <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
           Select the perfect plan for your audiobook needs or purchase additional credits
         </p>
+        {isSubscribed && (
+          <div className="flex items-center justify-center gap-2">
+            <span className="text-sm text-muted-foreground">Current plan:</span>
+            <SubscriptionBadge size="md" />
+          </div>
+        )}
       </div>
+
+      {/* Already Subscribed Alert */}
+      {showAlreadySubscribed && (
+        <AlreadySubscribedAlert
+          plan={currentPlan}
+          message={alreadySubscribedMessage}
+          onViewSubscription={() => navigate('/settings?tab=subscription')}
+        />
+      )}
+
+      {/* Current Subscription Card (if subscribed) */}
+      {isSubscribed && (
+        <SubscriptionStatusCard className="max-w-md mx-auto" />
+      )}
 
       {/* Billing Cycle Toggle */}
       <div className="flex justify-center items-center gap-4">
@@ -199,8 +297,21 @@ export default function Pricing() {
                 variant={plan.isPopular ? 'default' : 'outline'}
                 size="lg"
                 onClick={() => handleSelectPlan(plan.id)}
+                disabled={purchaseLoading === plan.id || (isSubscribed && currentPlan === plan.id)}
               >
-                Choose {plan.name}
+                {purchaseLoading === plan.id ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Processing...
+                  </>
+                ) : isSubscribed && currentPlan === plan.id ? (
+                  <>
+                    <Check className="h-4 w-4 mr-2" />
+                    Current Plan
+                  </>
+                ) : (
+                  `Choose ${plan.name}`
+                )}
               </Button>
             </CardFooter>
           </Card>

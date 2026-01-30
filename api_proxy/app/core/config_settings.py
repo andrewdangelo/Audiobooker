@@ -27,11 +27,13 @@ class Settings(BaseSettings):
     PDF_SERVICE_URL: str = "http://localhost:8029/api/v1/pdf"
     TTS_SERVICE_URL: str = "http://localhost:8002/api/v1/tts"
     AUTH_SERVICE_URL: str = "http://localhost:8003/api/v1/auth"
+    PAYMENT_SERVICE_URL: str = "http://localhost:8004/api/v1/payment"
     
     # Queue Configuration
     MAX_CONCURRENT_PDF: int = 5
     MAX_CONCURRENT_TTS: int = 5
     MAX_CONCURRENT_AUTH: int = 10
+    MAX_CONCURRENT_PAYMENT: int = 10
     
     # Timeouts (seconds)
     REQUEST_TIMEOUT: int = 30

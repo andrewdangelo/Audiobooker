@@ -23,7 +23,10 @@ router = APIRouter(tags=["Account Management"])
 
 async def get_current_user_id(authorization: str = Header(None)) -> str:
     """Extract and verify user ID from authorization header"""
+    logger.info(f"Authorization header received: {authorization}")
+    
     if not authorization:
+        logger.warning("No authorization header provided")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated"
@@ -31,17 +34,21 @@ async def get_current_user_id(authorization: str = Header(None)) -> str:
     
     try:
         token = authorization.replace("Bearer ", "")
+        logger.info(f"Token extracted (first 20 chars): {token[:20]}...")
         payload = verify_token(token)
         
         if not payload:
+            logger.warning("Token verification returned None")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token"
             )
         
+        logger.info(f"Token verified for user: {payload.get('sub')}")
         return payload.get("sub")
     
-    except Exception:
+    except Exception as e:
+        logger.error(f"Token verification error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
@@ -191,3 +198,110 @@ async def delete_account(authorization: str = Header(None)):
     )
     
     return {"message": "Account deactivated successfully"}
+
+
+@router.get("/credits")
+async def get_user_credits(authorization: str = Header(None)):
+    """Get user's current credit balance (basic and premium)"""
+    user_id = await get_current_user_id(authorization)
+    
+    users = get_users_collection()
+    user = await users.find_one(
+        {"_id": ObjectId(user_id)}, 
+        {"credits": 1, "basic_credits": 1, "premium_credits": 1}
+    )
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    return {
+        "user_id": user_id,
+        "credits": user.get("credits", 0),  # Legacy total
+        "basic_credits": user.get("basic_credits", 0),
+        "premium_credits": user.get("premium_credits", 0),
+        "total_credits": user.get("basic_credits", 0) + user.get("premium_credits", 0)
+    }
+
+
+@router.get("/subscription")
+async def get_subscription_status(authorization: str = Header(None)):
+    """Get user's current subscription status"""
+    user_id = await get_current_user_id(authorization)
+    
+    users = get_users_collection()
+    user = await users.find_one(
+        {"_id": ObjectId(user_id)}, 
+        {
+            "subscription_plan": 1, 
+            "subscription_status": 1,
+            "subscription_billing_cycle": 1,
+            "subscription_start_date": 1,
+            "subscription_end_date": 1,
+            "subscription_cancelled_at": 1,
+            "subscription_discount_applied": 1,
+            "subscription_discount_end_date": 1,
+            "stripe_subscription_id": 1
+        }
+    )
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    return {
+        "user_id": user_id,
+        "subscription_plan": user.get("subscription_plan", "none"),
+        "subscription_status": user.get("subscription_status", "none"),
+        "subscription_billing_cycle": user.get("subscription_billing_cycle"),
+        "subscription_start_date": user.get("subscription_start_date"),
+        "subscription_end_date": user.get("subscription_end_date"),
+        "subscription_cancelled_at": user.get("subscription_cancelled_at"),
+        "subscription_discount_applied": user.get("subscription_discount_applied", False),
+        "subscription_discount_end_date": user.get("subscription_discount_end_date"),
+        "is_subscribed": user.get("subscription_status") in ["active", "pending_cancellation"]
+    }
+
+
+@router.put("/subscription")
+async def update_subscription(
+    subscription_data: dict,
+    authorization: str = Header(None)
+):
+    """Update user's subscription (internal use - called by payment service)"""
+    user_id = await get_current_user_id(authorization)
+    
+    users = get_users_collection()
+    
+    # Build update document
+    update_fields = {"updated_at": datetime.utcnow()}
+    
+    allowed_fields = [
+        "subscription_plan", "subscription_status", "subscription_billing_cycle",
+        "subscription_start_date", "subscription_end_date", "subscription_cancelled_at",
+        "subscription_discount_applied", "subscription_discount_end_date",
+        "stripe_customer_id", "stripe_subscription_id"
+    ]
+    
+    for field in allowed_fields:
+        if field in subscription_data:
+            update_fields[field] = subscription_data[field]
+    
+    result = await users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": update_fields}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to update subscription")
+    
+    # Return updated subscription info
+    user = await users.find_one({"_id": ObjectId(user_id)})
+    
+    return {
+        "user_id": user_id,
+        "subscription_plan": user.get("subscription_plan", "none"),
+        "subscription_status": user.get("subscription_status", "none"),
+        "subscription_billing_cycle": user.get("subscription_billing_cycle"),
+        "subscription_end_date": user.get("subscription_end_date"),
+        "message": "Subscription updated successfully"
+    }
+
