@@ -1,9 +1,8 @@
 """
 - PDF Processing Microservice - 
 
-FastAPI-based microservice for processing PDFs and TODO Ebooks .. from R2 storage. 
-Full Capabilities include text extraction, chunking, and formatting and DB Utilization using Postgres
-
+FastAPI-based microservice for processing PDFs and TODO Ebooks from R2 storage. 
+Full Capabilities include text extraction, chunking, and formatting and DB Utilization using MongoDB
 """
 __author__ = "Mohammad Saifan"
 
@@ -14,8 +13,9 @@ import logging
 
 from app.core.config_settings import settings
 from app.core.logging_config import setup_logging
-from app.routers import (health, pdf_postgres_database, processed_json_postgres_database, pdf_processor, r2_processor)
+from app.routers import health, pdf_database, processed_json_database, pdf_processor, r2_processor
 from app.core.redis_manager import redis_manager
+from app.database.database import connect_to_mongodb, close_mongodb_connection
 
 __version__ = settings.TEST_VERSION
 
@@ -47,35 +47,35 @@ app.__version__ = __version__
 # Include health router
 app.include_router(
     health.router, 
-    prefix=f"{settings.API_V1_PREFIX}/health",
+    prefix=f"{settings.API_V1_PREFIX}/health", 
     tags=["-HEALTH-"]
 )
 
 # Include pdf_processing router
 app.include_router(
-    pdf_processor.router,
-    prefix=f"{settings.API_V1_PREFIX}/pdf_processor",
+    pdf_processor.router, 
+    prefix=f"{settings.API_V1_PREFIX}/pdf_processor", 
     tags=["-PDF PROCESSOR-"]
 )
 
-# Include pdf_postgres_database router
+# Include pdf_database router
 app.include_router(
-    pdf_postgres_database.router,
-    prefix=f"{settings.API_V1_PREFIX}/pdf_postgres_database",
-    tags=["-PDF POSTGRES AUDIOBOOK DATABASE-"]
+    pdf_database.router,
+    prefix=f"{settings.API_V1_PREFIX}/pdf_database",
+    tags=["-PDF AUDIOBOOK DATABASE-"]
 )
 
-# Include r2_database router
+# Include processed_json_database router
 app.include_router(
-    processed_json_postgres_database.router,
-    prefix=f"{settings.API_V1_PREFIX}/processed_json_postgres_database",
-    tags=["-PROCESSED JSON POSTGRES AUDIOBOOK DATABASE-"]
+    processed_json_database.router, 
+    prefix=f"{settings.API_V1_PREFIX}/processed_json_database", 
+    tags=["-PROCESSED JSON DATABASE-"]
 )
 
 # Include r2_processor router
 app.include_router(
-    r2_processor.router,
-    prefix=f"{settings.API_V1_PREFIX}/r2_processor",
+    r2_processor.router, 
+    prefix=f"{settings.API_V1_PREFIX}/r2_processor", 
     tags=["-Cloudflare R2 Service-"]
 )
 
@@ -94,6 +94,7 @@ async def startup_event():
     
     logger.info("Starting PDF Processing Microservice")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
+    logger.info(f"MongoDB Database: {settings.DATABASE_NAME}")
     logger.info(f"R2 Bucket: {settings.R2_BUCKET_NAME}")
 
 
