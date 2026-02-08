@@ -2,6 +2,8 @@
 MongoDB Database Configuration
 """
 
+__author__ = "Mohammad Saifan"
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
 from typing import Optional
@@ -30,6 +32,7 @@ def get_database(db_name=settings.DATABASE_NAME):
         sync_client = MongoClient(settings.DATABASE_URL)
     return sync_client[db_name]
 
+
 async def get_async_database(db_name=settings.DATABASE_NAME):
     """
     Get async MongoDB database instance
@@ -42,7 +45,6 @@ async def get_async_database(db_name=settings.DATABASE_NAME):
     if async_client is None:
         async_client = AsyncIOMotorClient(settings.DATABASE_URL)
     return async_client[db_name]
-
 
 def get_db(db_name=settings.DATABASE_NAME):
     """
@@ -66,7 +68,7 @@ def establish_mongodb_connection(db_name=settings.DATABASE_NAME):
         db = get_database(db_name=db_name)
         yield db
     finally:
-        pass  
+        pass 
 
 async def connect_to_mongodb():
     """Initialize MongoDB connection"""

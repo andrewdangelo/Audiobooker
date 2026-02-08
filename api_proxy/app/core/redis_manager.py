@@ -32,7 +32,17 @@ class RedisManager(RedisKeys):
             
         redis_url += f"{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
 
-        self._connection_pool = redis.ConnectionPool.from_url(redis_url, decode_responses=True, max_connections=150)
+        self._connection_pool = redis.ConnectionPool.from_url(
+            redis_url, 
+            decode_responses=True,
+            max_connections=300, 
+            socket_keepalive=True,
+            socket_keepalive_options={1: 1, 2: 1, 3: 3},
+            health_check_interval=30, 
+            retry_on_timeout=True,
+            socket_connect_timeout=5,
+            socket_timeout=5
+        )
 
         self.redis = redis.Redis(connection_pool=self._connection_pool)
 

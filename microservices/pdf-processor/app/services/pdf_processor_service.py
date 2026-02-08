@@ -27,8 +27,7 @@ from app.utils.chunker import TextChunker
 
 from app.services import r2_service
 from app.services.llm_speaker_chunker import SpeakerChunker
-from app.database import (audio_book_db, database)
-from app.models.audiobook import Processed_Audiobook
+from app.database import (database, db_engine)
 
 
 class PDFProcessorService(Logger):
@@ -82,44 +81,23 @@ class PDFProcessorService(Logger):
     
     # ==================== PDF PROCESSOR TASKS ====================
     
-    async def process_pdf_task(self, job_id: str, r2_key: str, chunk_size: int, chunk_overlap: int, output_format: str):
-        """
-        Background task for processing PDF
-        
-        Args:
-            job_id: Unique job identifier
-            r2_key: R2 storage key for the PDF
-            chunk_size: Size of text chunks
-            chunk_overlap: Overlap between chunks
-            output_format: Output format (json, text)
-        """
-        
+    async def process_pdf_task(self, job_id: str, user_id: str, r2_key: str, chunk_size: int, chunk_overlap: int, output_format: str):
+        """Background task for processing PDF"""
         try:
-            self.logger.info(f"Starting PDF processing for job {job_id}")
+            self.logger.info(f"Starting PDF processing for job {job_id}, user {user_id}")
             
-            # Initialize services
             r2_svc = r2_service.R2Service()
             
-            # Update job status - Downloading
-            await self.update_job(job_id, {
-                "status": "processing",
-                "message": "Downloading PDF from R2",
-                "progress": 10
-            })
+            await self.update_job(job_id, {"status": "processing", "message": "Downloading PDF from R2", "progress": 10})
             
-            # Download PDF from R2
             pdf_data = r2_svc.download_file(r2_key)
             
-            # Update job status - Extracting
             await self.update_job(job_id, {"message": "Extracting text from PDF", "progress": 30})
             
-            # Process PDF
             result = await self.process_pdf(pdf_data=pdf_data, chunk_size=chunk_size, chunk_overlap=chunk_overlap, output_format=output_format)
             
-            # Update job status - Uploading
             await self.update_job(job_id, {"progress": 80, "message": "Uploading processed data to R2"})
             
-            # Upload results back to R2
             output_key = f"processed_audiobooks/{job_id.replace('.pdf', '')}_processed.json"
             r2_svc.upload_processed_data(key=output_key, data=result)
             
@@ -180,21 +158,18 @@ class PDFProcessorService(Logger):
             
             # Create audiobook record in database
             self.logger.info(f"Creating database record for job {job_id}")
-            db_gen = database.get_db()
-            db = next(db_gen)
-            audiobook_service = audio_book_db.AudiobookDBService(db, model=Processed_Audiobook)
+            from app.database import database, db_engine
+            from app.models.db_models import Collections
             
-            # Preparing data as dictionary
-            audiobook_data = {
-                "r2_key": job_id,
-                "title": r2_key.split("/")[-1],
-                "pdf_path": r2_key,
-                "status": "COMPLETED"
-            }
+            db_func = database.get_db()
+            db = db_func()
+            audiobook_service = db_engine.MongoDBService(db, Collections.PROCESSED_AUDIOBOOKS)
+            
+            audiobook_data = {"r2_key": job_id, "user_id": user_id, "title": r2_key.split("/")[-1], "pdf_path": r2_key, "status": "COMPLETED"}
             
             audiobook = audiobook_service.create(audiobook_data)
             
-            self.logger.info(f"Upload complete - ID: {audiobook.r2_key}")
+            self.logger.info(f"Upload complete - ID: {audiobook.get('r2_key')}")
             
             # Update job with completion results
             job_result = {

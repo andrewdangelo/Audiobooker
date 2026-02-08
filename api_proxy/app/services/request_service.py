@@ -20,7 +20,8 @@ class RequestService:
         service_map = {
             "pdf": settings.PDF_SERVICE_URL,
             "tts": settings.TTS_SERVICE_URL,
-            "auth": settings.AUTH_SERVICE_URL
+            "auth": settings.AUTH_SERVICE_URL,
+            "backend": settings.BACKEND_SERVICE_URL
         }
         return (service_map.get(service_name.lower()))
     
