@@ -15,12 +15,17 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 
-// Types
+// Types - matches API response from auth service
 export interface AuthUser {
   id: string
   email: string
-  name: string
+  first_name: string
+  last_name?: string
+  username?: string
+  is_active?: boolean
+  auth_provider?: string
   avatarUrl?: string
+  credits?: number
 }
 
 export interface AuthState {
@@ -30,6 +35,15 @@ export interface AuthState {
   refreshToken: string | null
   loading: boolean
   error: string | null
+}
+
+// Helper to get display name
+export function getUserDisplayName(user: AuthUser | null): string {
+  if (!user) return 'User'
+  if (user.first_name && user.last_name) {
+    return `${user.first_name} ${user.last_name}`
+  }
+  return user.first_name || user.username || user.email.split('@')[0]
 }
 
 // Initial state
@@ -60,7 +74,8 @@ export const loginAsync = createAsyncThunk(
         user: {
           id: '1',
           email: credentials.email,
-          name: 'John Doe',
+          first_name: 'John',
+          last_name: 'Doe',
         }
       }
     } catch (error) {
@@ -172,7 +187,9 @@ export const {
 export const selectIsAuthenticated = (state: RootState) => state.auth.isAuthenticated
 export const selectCurrentUser = (state: RootState) => state.auth.user
 export const selectAuthToken = (state: RootState) => state.auth.token
+export const selectRefreshToken = (state: RootState) => state.auth.refreshToken
 export const selectAuthLoading = (state: RootState) => state.auth.loading
 export const selectAuthError = (state: RootState) => state.auth.error
+export const selectUserDisplayName = (state: RootState) => getUserDisplayName(state.auth.user)
 
 export default authSlice.reducer

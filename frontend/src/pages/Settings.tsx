@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
@@ -9,44 +9,74 @@ import { Separator } from '@/components/ui/separator';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/useToast';
-
-// Placeholder for user data - In a real app, this would come from a context or API
-const initialUserData = {
-  name: 'Andrew DAngelo',
-  email: 'andrew@example.com',
-  avatarUrl: 'https://github.com/shadcn.png',
-  language: 'en',
-  theme: 'system',
-  notifications: {
-    email: true,
-    push: false,
-    marketing: false,
-  }
-};
+import { useAppSelector, useAppDispatch } from '@/store/hooks';
+import { selectCurrentUser, selectAuthToken, updateUser, getUserDisplayName } from '@/store/slices/authSlice';
+import { authService } from '@/services/authService';
 
 const Settings = () => {
-  const [userData, setUserData] = useState(initialUserData);
   const { toast } = useToast();
+  const dispatch = useAppDispatch();
+  const user = useAppSelector(selectCurrentUser);
+  const token = useAppSelector(selectAuthToken);
+  
+  // Form state initialized from Redux user data
+  const [userData, setUserData] = useState({
+    name: getUserDisplayName(user),
+    email: user?.email || '',
+    first_name: user?.first_name || '',
+    last_name: user?.last_name || '',
+    avatarUrl: user?.avatarUrl || 'https://github.com/shadcn.png',
+    language: 'en',
+    theme: 'system',
+    notifications: {
+      email: true,
+      push: false,
+      marketing: false,
+    }
+  });
+  
   const [isLoading, setIsLoading] = useState(false);
+  
+  // Update form when user data changes
+  useEffect(() => {
+    if (user) {
+      setUserData(prev => ({
+        ...prev,
+        name: getUserDisplayName(user),
+        email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name || '',
+        avatarUrl: user.avatarUrl || prev.avatarUrl,
+      }));
+    }
+  }, [user]);
 
   // Handler for profile updates
   const handleProfileUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     
-    // TODO: API Integration - Update User Profile
-    // POST /api/v1/users/me
-    // Body: { name: userData.name, email: userData.email }
-    
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (token) {
+        // Call API to update profile
+        const updatedUser = await authService.updateProfile(token, {
+          first_name: userData.first_name,
+          last_name: userData.last_name,
+        });
+        
+        // Update Redux store with new user data
+        dispatch(updateUser({
+          first_name: updatedUser.first_name,
+          last_name: updatedUser.last_name,
+        }));
+      }
       
       toast({
         title: "Profile updated",
         description: "Your profile information has been updated successfully.",
       });
     } catch (error) {
+      console.error('Profile update error:', error);
       toast({
         title: "Error",
         description: "Failed to update profile. Please try again.",
@@ -56,23 +86,61 @@ const Settings = () => {
     }
   };
 
+  // Password form state
+  const [passwordData, setPasswordData] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+  });
+
   // Handler for password update
   const handlePasswordUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (passwordData.newPassword !== passwordData.confirmPassword) {
+      toast({
+        title: "Error",
+        description: "New passwords do not match.",
+      });
+      return;
+    }
+    
+    if (passwordData.newPassword.length < 8) {
+      toast({
+        title: "Error",
+        description: "Password must be at least 8 characters.",
+      });
+      return;
+    }
+    
     setIsLoading(true);
 
-    // TODO: API Integration - Change Password
-    // POST /api/v1/auth/change-password
-    // Body: { currentPassword, newPassword }
-
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (token) {
+        await authService.changePassword(
+          token,
+          passwordData.currentPassword,
+          passwordData.newPassword
+        );
+      }
+      
       toast({
         title: "Password updated",
         description: "Your password has been changed successfully.",
       });
-    } catch (error) {
-      // Handle error
+      
+      // Clear password fields
+      setPasswordData({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: '',
+      });
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.detail || "Failed to update password. Please try again.";
+      toast({
+        title: "Error",
+        description: errorMessage,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -111,7 +179,7 @@ const Settings = () => {
                   className="h-20 w-20" 
                   src={userData.avatarUrl} 
                   alt={userData.name}
-                  fallback={userData.name.charAt(0)}
+                  fallback={userData.first_name?.charAt(0) || 'U'}
                 />
                 <Button variant="outline" size="sm">
                   Change Avatar
@@ -125,13 +193,23 @@ const Settings = () => {
               <Separator />
 
               <form onSubmit={handleProfileUpdate} className="space-y-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="name">Display Name</Label>
-                  <Input 
-                    id="name" 
-                    value={userData.name} 
-                    onChange={(e) => setUserData({...userData, name: e.target.value})}
-                  />
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="first_name">First Name</Label>
+                    <Input 
+                      id="first_name" 
+                      value={userData.first_name} 
+                      onChange={(e) => setUserData({...userData, first_name: e.target.value})}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="last_name">Last Name</Label>
+                    <Input 
+                      id="last_name" 
+                      value={userData.last_name} 
+                      onChange={(e) => setUserData({...userData, last_name: e.target.value})}
+                    />
+                  </div>
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="email">Email</Label>
@@ -139,8 +217,10 @@ const Settings = () => {
                     id="email" 
                     type="email" 
                     value={userData.email} 
-                    onChange={(e) => setUserData({...userData, email: e.target.value})}
+                    disabled
+                    className="bg-muted"
                   />
+                  <p className="text-sm text-muted-foreground">Email cannot be changed.</p>
                 </div>
                 <div className="flex justify-end">
                   <Button type="submit" disabled={isLoading}>
@@ -165,18 +245,35 @@ const Settings = () => {
               <form onSubmit={handlePasswordUpdate} className="space-y-4">
                 <div className="grid gap-2">
                   <Label htmlFor="current-password">Current Password</Label>
-                  <Input id="current-password" type="password" />
+                  <Input 
+                    id="current-password" 
+                    type="password" 
+                    value={passwordData.currentPassword}
+                    onChange={(e) => setPasswordData({...passwordData, currentPassword: e.target.value})}
+                  />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="new-password">New Password</Label>
-                  <Input id="new-password" type="password" />
+                  <Input 
+                    id="new-password" 
+                    type="password" 
+                    value={passwordData.newPassword}
+                    onChange={(e) => setPasswordData({...passwordData, newPassword: e.target.value})}
+                  />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="confirm-password">Confirm Password</Label>
-                  <Input id="confirm-password" type="password" />
+                  <Input 
+                    id="confirm-password" 
+                    type="password" 
+                    value={passwordData.confirmPassword}
+                    onChange={(e) => setPasswordData({...passwordData, confirmPassword: e.target.value})}
+                  />
                 </div>
                 <div className="flex justify-end">
-                  <Button type="submit" disabled={isLoading}>Change Password</Button>
+                  <Button type="submit" disabled={isLoading}>
+                    {isLoading ? "Updating..." : "Change Password"}
+                  </Button>
                 </div>
               </form>
             </CardContent>

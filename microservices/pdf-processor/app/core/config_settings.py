@@ -23,8 +23,15 @@ class Settings(BaseSettings):
     # Endpoints:
     API_V1_PREFIX: str = "/api/v1/pdf"
     
-    # Database
-    DATABASE_URL: str = "postgresql://audiobooker:password@localhost:5432/audiobooker_db"
+    # MongoDB Database
+    DATABASE_URL: str = Field(
+        default="mongodb://localhost:27017",
+        description="MongoDB connection URL"
+    )
+    DATABASE_NAME: str = Field(
+        default="audiobooker_pdf_processing_db",
+        description="MongoDB database name"
+    )
     
     # R2 Storage
     R2_ACCOUNT_ID: str = Field(..., description="Cloudflare account ID")
@@ -49,6 +56,15 @@ class Settings(BaseSettings):
     REDIS_PORT: int = Field(default=6379, description="Redis port")
     REDIS_DB: int = Field(default=0, description="Redis database number")
     REDIS_PASSWORD: Optional[str] = Field(default=None, description="Redis password")
+    
+    # LLM Configuration (for speaker chunking)
+    OPENAI_API_KEY: Optional[str] = Field(default=None, description="OpenAI API key for LLM chunking")
+    LLM_MODEL: str = Field(default="gpt-4o", description="OpenAI model for speaker chunking")
+    LLM_CONCURRENCY: int = Field(default=1, description="Number of concurrent LLM requests (1 recommended for rate limits)")
+    LLM_MAX_CHARS_PER_WINDOW: int = Field(default=15000, description="Maximum characters per LLM processing window (reduced for rate limits)")
+    LLM_DISCOVERY_CHARS: int = Field(default=20000, description="Characters to use for character discovery")
+    LLM_DELAY_BETWEEN_REQUESTS: float = Field(default=3.0, description="Seconds to wait between LLM requests")
+    ENABLE_LLM_CHUNKING: bool = Field(default=False, description="Enable automatic LLM-based speaker chunking")
     
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):

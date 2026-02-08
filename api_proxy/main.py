@@ -4,6 +4,7 @@ API Proxy - Micro
 import uvicorn
 import logging
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config_settings import settings
@@ -25,6 +26,15 @@ app = FastAPI(
     title="API Proxy For Audiobooker Microservices",
     description="Rate limiting and Request queueing",
     version="0.0.1"
+)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS.split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Add rate limiter
@@ -81,4 +91,4 @@ async def global_exception_handler(request, exc):
 # ==================== RUN ====================
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=settings.PORT, reload=settings.ENVIRONMENT == "develfopment", log_level=settings.LOG_LEVEL.lower())
+    uvicorn.run("main:app", host="0.0.0.0", port=settings.PORT, reload=settings.ENVIRONMENT == "development", log_level=settings.LOG_LEVEL.lower())
