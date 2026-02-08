@@ -34,6 +34,7 @@ import { Separator } from '@/components/ui/separator'
 import { useAppSelector, useAppDispatch } from '@/store/hooks'
 import { selectCartItemCount } from '@/store/slices/cartSlice'
 import { selectCurrentUser, selectUserDisplayName, logout } from '@/store/slices/authSlice'
+import { selectUserCredits } from '@/store/slices/storeSlice'
 import { authService } from '@/services/authService'
 
 export function Navbar() {
@@ -49,12 +50,15 @@ export function Navbar() {
   const user = useAppSelector(selectCurrentUser)
   const displayName = useAppSelector(selectUserDisplayName)
   
+  // Credits from Redux store state
+  const userCredits = useAppSelector(selectUserCredits)
+  
   // Computed user display values
   const currentUser = {
     name: displayName,
     email: user?.email || '',
     avatarUrl: user?.avatarUrl,
-    credits: user?.credits || 0
+    credits: userCredits
   }
   
   // TODO: Implement actual search functionality
@@ -126,7 +130,7 @@ export function Navbar() {
             className="hidden sm:flex items-center gap-2 font-semibold"
             asChild
           >
-            <Link to="/pricing">
+            <Link to="/credits">
               <Coins className="h-4 w-4" />
               <span>{currentUser.credits} Credits</span>
             </Link>

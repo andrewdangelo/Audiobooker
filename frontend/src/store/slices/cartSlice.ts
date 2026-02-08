@@ -13,14 +13,14 @@
  * - Import actions: import { addToCart, removeFromCart, updateCartQuantity } from '@/store'
  * - Import selectors: import { selectCartItems, selectCartTotal } from '@/store'
  * 
- * API INTEGRATION POINTS:
- * - syncCart: Sync cart state with backend for persistence across devices
- * - checkout: Process the final purchase
- * - validateCart: Verify items are still available and prices are current
+ * PAYMENT INTEGRATION:
+ * - Card payments are processed via Stripe Payment Intents
+ * - Credits payments are processed via the payment microservice
  */
 
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
+import { paymentService } from '@/services/paymentService'
 
 // ============================================================================
 // TYPES
@@ -167,64 +167,65 @@ export const validateCart = createAsyncThunk(
 /**
  * Process checkout and complete purchase
  * 
- * TODO: API INTEGRATION
- * This thunk processes the final purchase, handling payment
- * and adding books to the user's library.
+ * This thunk processes the final purchase:
+ * - For card payments: The payment intent was already confirmed via Stripe Elements
+ * - For credits payments: Calls the payment service to deduct credits
  * 
- * API Endpoint: POST /api/v1/checkout
- * Request Body: { 
- *   items: CartItem[], 
- *   paymentMethod: 'credits' | 'card',
- *   paymentDetails?: PaymentDetails 
- * }
- * Response: { 
- *   success: boolean, 
- *   orderId: string, 
- *   purchasedBooks: string[],
- *   remainingCredits: number 
- * }
+ * API Endpoints:
+ * - POST /payment/pay-with-credits (for credits payment)
+ * - Payment Intent status check for card payments
  */
 export const checkout = createAsyncThunk(
   'cart/checkout',
   async (
-    { paymentMethod }: { paymentMethod: 'credits' | 'card' },
+    { paymentMethod, paymentIntentId }: { paymentMethod: 'credits' | 'card'; paymentIntentId?: string | null },
     { getState, rejectWithValue }
   ) => {
     try {
       const state = getState() as RootState
       const cartItems = state.cart.itemIds.map((id: string) => state.cart.items[id])
-      
-      // TODO: API INTEGRATION
-      // Replace with actual API call:
-      // const response = await fetch(`${API_BASE_URL}/checkout`, {
-      //   method: 'POST',
-      //   headers: { 
-      //     'Content-Type': 'application/json',
-      //     'Authorization': `Bearer ${state.auth.token}`
-      //   },
-      //   body: JSON.stringify({ 
-      //     items: cartItems,
-      //     paymentMethod,
-      //     useCredits
-      //   })
-      // })
-      // if (!response.ok) {
-      //   const error = await response.json()
-      //   throw new Error(error.message || 'Checkout failed')
-      // }
-      // return await response.json()
-      
-      // Mock checkout response
-      await new Promise(resolve => setTimeout(resolve, 1500))
-      
-      // Simulate successful checkout
-      return {
-        success: true,
-        orderId: `ORD-${Date.now()}`,
-        purchasedBooks: cartItems.map((item: CartItem) => item.bookId),
-        remainingCredits: paymentMethod === 'credits' 
-          ? Math.max(0, state.store.userCredits - cartItems.reduce((sum: number, item: CartItem) => sum + item.creditsAtAdd * item.quantity, 0))
-          : state.store.userCredits,
+      const totalCredits = cartItems.reduce((sum: number, item: CartItem) => sum + item.creditsAtAdd * item.quantity, 0)
+      const totalPrice = cartItems.reduce((sum: number, item: CartItem) => sum + item.priceAtAdd * item.quantity, 0)
+      const userId = state.auth?.user?.id
+
+      if (!userId) {
+        throw new Error('User not authenticated')
+      }
+
+      if (paymentMethod === 'credits') {
+        // Process credits payment via payment service
+        const response = await paymentService.payWithCredits({
+          user_id: userId,
+          amount: totalPrice,
+          currency: 'usd',
+          metadata: {
+            item_count: String(cartItems.length),
+            book_ids: cartItems.map((item: CartItem) => item.bookId).join(','),
+          },
+        })
+
+        return {
+          success: true,
+          orderId: response.order_id,
+          purchasedBooks: cartItems.map((item: CartItem) => item.bookId),
+          remainingCredits: response.remaining_credits,
+        }
+      } else {
+        // Card payment - the payment intent was already confirmed via Stripe Elements
+        // Just verify the payment was successful if we have a payment intent ID
+        if (paymentIntentId) {
+          const paymentStatus = await paymentService.getPaymentStatus(paymentIntentId)
+          if (paymentStatus.status !== 'succeeded') {
+            throw new Error(`Payment not completed: ${paymentStatus.status}`)
+          }
+        }
+
+        return {
+          success: true,
+          orderId: paymentIntentId || `ORD-${Date.now()}`,
+          purchasedBooks: cartItems.map((item: CartItem) => item.bookId),
+          remainingCredits: state.store.userCredits,
+        }
       }
     } catch (error) {
       return rejectWithValue(error instanceof Error ? error.message : 'Checkout failed')

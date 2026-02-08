@@ -25,6 +25,8 @@ class QueueService:
         max_concurrent = (settings.MAX_CONCURRENT_PDF if service_name == "pdf" else settings.MAX_CONCURRENT_TTS 
                           if service_name == "tts" else settings.MAX_CONCURRENT_BACKEND 
                           if service_name == "backend" else settings.MAX_CONCURRENT_AUTH
+                          if service_name == "auth" else settings.MAX_CONCURRENT_PAYMENT
+                          if service_name == "payment" else 1
         )
 
         return active_count < max_concurrent
