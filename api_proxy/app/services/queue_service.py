@@ -22,15 +22,13 @@ class QueueService:
         """Check if service can handle more requests"""
         key = f"{redis_manager.SERVICE_ACTIVE}:{service_name}"
         active_count = await redis_manager.scard(key)
-        
-        # Map service name to max concurrent setting
-        max_concurrent_map = {
-            "pdf": settings.MAX_CONCURRENT_PDF,
-            "tts": settings.MAX_CONCURRENT_TTS,
-            "auth": settings.MAX_CONCURRENT_AUTH,
-            "payment": settings.MAX_CONCURRENT_PAYMENT
-        }
-        max_concurrent = max_concurrent_map.get(service_name, settings.MAX_CONCURRENT_PDF)
+        max_concurrent = (settings.MAX_CONCURRENT_PDF if service_name == "pdf" else settings.MAX_CONCURRENT_TTS 
+                          if service_name == "tts" else settings.MAX_CONCURRENT_BACKEND 
+                          if service_name == "backend" else settings.MAX_CONCURRENT_AUTH
+                          if service_name == "auth" else settings.MAX_CONCURRENT_PAYMENT
+                          if service_name == "payment" else 1
+        )
+
         return active_count < max_concurrent
     
     @staticmethod

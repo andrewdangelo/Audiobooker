@@ -140,6 +140,8 @@ async def start_queue_workers():
     # Start workers for each service (10% of concurrency load)
     pdf_workers = max(1, int(settings.MAX_CONCURRENT_PDF * 0.10))
     tts_workers = max(1, int(settings.MAX_CONCURRENT_TTS * 0.10))
+    backend_workers = max(1, int(settings.MAX_CONCURRENT_BACKEND * 0.10))
+    auth_workers = max(1, int(settings.MAX_CONCURRENT_AUTH * 0.10))
     
     for i in range(pdf_workers):
         _worker_tasks.append(asyncio.create_task(queue_worker("pdf", i)))
@@ -147,7 +149,13 @@ async def start_queue_workers():
     for i in range(tts_workers):
         _worker_tasks.append(asyncio.create_task(queue_worker("tts", i)))
     
-    logger.info(f"Started {len(_worker_tasks)} queue workers (PDF: {pdf_workers}, TTS: {tts_workers})")
+    for i in range(backend_workers):
+        _worker_tasks.append(asyncio.create_task(queue_worker("backend", i)))
+        
+    for i in range(auth_workers):
+        _worker_tasks.append(asyncio.create_task(queue_worker("auth", i)))
+    
+    logger.info(f"Started {len(_worker_tasks)} queue workers (PDF: {pdf_workers}, TTS: {tts_workers}, BACKEND: {backend_workers}, AUTH: {auth_workers})")
 
 
 async def stop_queue_workers():

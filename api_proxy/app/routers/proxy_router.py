@@ -196,6 +196,36 @@ async def proxy_payment_delete(request: Request, path: str):
     """Forward /payment/* requests - queue if overloaded"""
     return await forward_or_queue(_payment_service_name, request, path)
 
+# ======================================== BACKEND AUTH ROUTES ========================================
+_auth_service_name = "backend"
+
+# GET proxy for backend
+@router.get("/backend/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_backend_get(request: Request, path: str):
+    """Forward /backend/* requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
+
+# POST proxy for backend
+@router.post("/backend/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_backend_post(request: Request, path: str):
+    """Forward /backend/* requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
+
+# PUT proxy for backend
+@router.put("/backend/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_backend_put(request: Request, path: str):
+    """Forward /backend/* requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
+
+# DELETE proxy for backend 
+@router.delete("/backend/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_backend_delete(request: Request, path: str):
+    """Forward /backend/* requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
 
 # ==================== QUEUE STATUS and Redis QUEUE ====================
 
@@ -311,6 +341,7 @@ async def health_check():
     
     # Check services
     pdf_ok = tts_ok = auth_ok = payment_ok = False
+    pdf_ok = tts_ok = auth_ok = backend_ok = False
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -332,6 +363,13 @@ async def health_check():
             auth_ok = auth_response.status_code == 200
     except Exception as e:
         logger.error(f"Auth service health check failed: {e}")
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            backend_response = await client.get(f"{settings.BACKEND_SERVICE_URL}/health/")
+            backend_ok = backend_response.status_code == 200
+    except Exception as e:
+        logger.error(f"Backend service health check failed: {e}")
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -344,13 +382,18 @@ async def health_check():
     pdf_queue = await QueueService.get_queue_length("pdf")
     tts_queue = await QueueService.get_queue_length("tts")
     auth_queue = await QueueService.get_queue_length("auth")
+    backend_queue = await QueueService.get_queue_length("backend")
     payment_queue = await QueueService.get_queue_length("payment")
+
+    
     pdf_active = await QueueService.get_active_count("pdf")
     tts_active = await QueueService.get_active_count("tts")
     auth_active = await QueueService.get_active_count("auth")
+    backend_active = await QueueService.get_active_count("backend")
     payment_active = await QueueService.get_active_count("payment")
+
     
-    healthy = redis_ok and pdf_ok and tts_ok and auth_ok and payment_ok
+    healthy = redis_ok and pdf_ok and tts_ok and auth_ok and backend_ok and payment_ok
     unhealthy = []
     if not redis_ok:
         unhealthy.append("[REDIS Service]")
@@ -362,6 +405,8 @@ async def health_check():
         unhealthy.append("[AUTH Microservice]")
     if not payment_ok:
         unhealthy.append("[PAYMENT Microservice]")
+    if not backend_ok:
+        unhealthy.append("[BACKEND Microservice]")
     
     return {
         "status": "healthy" if healthy else f"[CRITICAL]: Check on {', '.join(unhealthy)} failed",
@@ -370,7 +415,8 @@ async def health_check():
             "pdf": "ok" if pdf_ok else "error",
             "tts": "ok" if tts_ok else "error",
             "auth": "ok" if auth_ok else "error",
-            "payment": "ok" if payment_ok else "error"
+            "payment": "ok" if payment_ok else "error",
+            "backend": "ok" if backend_ok else "error"
         },
         "queues": {
             "pdf": {
@@ -392,6 +438,11 @@ async def health_check():
                 "queued": payment_queue,
                 "active": payment_active,
                 "max": settings.MAX_CONCURRENT_PAYMENT
+            },
+            "backend": {
+                "queued": backend_queue,
+                "active": backend_active,
+                "max": settings.MAX_CONCURRENT_BACKEND
             }
         }
     }
@@ -404,10 +455,13 @@ async def get_metrics():
     tts_queue = await QueueService.get_queue_length("tts")
     auth_queue = await QueueService.get_queue_length("auth")
     payment_queue = await QueueService.get_queue_length("payment")
+    backend_queue = await QueueService.get_queue_length("backend")
+    
     pdf_active = await QueueService.get_active_count("pdf")
     tts_active = await QueueService.get_active_count("tts")
     auth_active = await QueueService.get_active_count("auth")
     payment_active = await QueueService.get_active_count("payment")
+    backend_active = await QueueService.get_active_count("backend")
     
     return {
         "pdf_service": {
@@ -433,5 +487,11 @@ async def get_metrics():
             "active_requests": payment_active,
             "max_concurrent": settings.MAX_CONCURRENT_PAYMENT,
             "available_slots": settings.MAX_CONCURRENT_PAYMENT - payment_active
+        },
+        "backend_service": {
+            "queued_requests": backend_queue,
+            "active_requests": backend_active,
+            "max_concurrent": settings.MAX_CONCURRENT_BACKEND,
+            "available_slots": settings.MAX_CONCURRENT_BACKEND - backend_active
         }
     }
