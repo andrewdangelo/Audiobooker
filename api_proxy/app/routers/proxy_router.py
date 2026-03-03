@@ -164,6 +164,13 @@ async def proxy_auth_delete(request: Request, path: str):
     """Forward /auth/* requests - queue if overloaded"""
     return await forward_or_queue(_auth_service_name, request, path)
 
+# PATCH proxy for Auth (internal subscription/credits updates)
+@router.patch("/auth/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_auth_patch(request: Request, path: str):
+    """Forward /auth/* PATCH requests - queue if overloaded"""
+    return await forward_or_queue(_auth_service_name, request, path)
+
 
 # ======================================== PROXY PAYMENT ROUTES ========================================
 _payment_service_name = "payment"
@@ -196,36 +203,50 @@ async def proxy_payment_delete(request: Request, path: str):
     """Forward /payment/* requests - queue if overloaded"""
     return await forward_or_queue(_payment_service_name, request, path)
 
-# ======================================== BACKEND AUTH ROUTES ========================================
-_auth_service_name = "backend"
+# PATCH proxy for Payment
+@router.patch("/payment/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_payment_patch(request: Request, path: str):
+    """Forward /payment/* PATCH requests - queue if overloaded"""
+    return await forward_or_queue(_payment_service_name, request, path)
+
+# ======================================== BACKEND ROUTES ========================================
+_backend_service_name = "backend"
 
 # GET proxy for backend
 @router.get("/backend/{path:path}")
 @limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
 async def proxy_backend_get(request: Request, path: str):
     """Forward /backend/* requests - queue if overloaded"""
-    return await forward_or_queue(_auth_service_name, request, path)
+    return await forward_or_queue(_backend_service_name, request, path)
 
 # POST proxy for backend
 @router.post("/backend/{path:path}")
 @limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
 async def proxy_backend_post(request: Request, path: str):
     """Forward /backend/* requests - queue if overloaded"""
-    return await forward_or_queue(_auth_service_name, request, path)
+    return await forward_or_queue(_backend_service_name, request, path)
 
 # PUT proxy for backend
 @router.put("/backend/{path:path}")
 @limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
 async def proxy_backend_put(request: Request, path: str):
     """Forward /backend/* requests - queue if overloaded"""
-    return await forward_or_queue(_auth_service_name, request, path)
+    return await forward_or_queue(_backend_service_name, request, path)
 
 # DELETE proxy for backend 
 @router.delete("/backend/{path:path}")
 @limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
 async def proxy_backend_delete(request: Request, path: str):
     """Forward /backend/* requests - queue if overloaded"""
-    return await forward_or_queue(_auth_service_name, request, path)
+    return await forward_or_queue(_backend_service_name, request, path)
+
+# PATCH proxy for backend
+@router.patch("/backend/{path:path}")
+@limiter.limit(f"{settings.RATE_LIMIT_PER_HOUR}/hour")
+async def proxy_backend_patch(request: Request, path: str):
+    """Forward /backend/* PATCH requests - queue if overloaded"""
+    return await forward_or_queue(_backend_service_name, request, path)
 
 # ==================== QUEUE STATUS and Redis QUEUE ====================
 

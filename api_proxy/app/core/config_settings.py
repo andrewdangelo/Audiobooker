@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # Application
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
-    PORT: int = 8009
+    PORT: int = 8000
     LOG_LEVEL: str = "INFO"
     TEST_VERSION: str = "Check ENV for test version"
     API_V1_PREFIX: str = "/api/v1/audiobooker_proxy"
@@ -24,11 +24,11 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: Optional[str] = None
     
     # Microservices - Auth service now at /api/v1/auth (not nested /auth/auth)
-    PDF_SERVICE_URL: str = "http://localhost:8029/api/v1/pdf"
-    TTS_SERVICE_URL: str = "http://localhost:8002/api/v1/tts"
-    AUTH_SERVICE_URL: str = "http://localhost:8003/api/v1/auth"
-    BACKEND_SERVICE_URL: str = "http://localhost:1029/api/v1/backend"
-    PAYMENT_SERVICE_URL: str = "http://localhost:8030/api/v1/payment"
+    PDF_SERVICE_URL: str = "http://localhost:8004/api/v1/pdf"
+    TTS_SERVICE_URL: str = "http://localhost:8003/api/v1/tts"
+    AUTH_SERVICE_URL: str = "http://localhost:8001/api/v1/auth"
+    BACKEND_SERVICE_URL: str = "http://localhost:8002/api/v1"
+    PAYMENT_SERVICE_URL: str = "http://localhost:8005/api/v1/payment"
     # Queue Configuration
     MAX_CONCURRENT_PDF: int = 5
     MAX_CONCURRENT_TTS: int = 5

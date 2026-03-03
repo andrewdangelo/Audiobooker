@@ -330,10 +330,12 @@ interface PaymentStepProps {
   totalCredits: number
   userCredits: number
   userId: string | null
+  paymentId: string | null
   paymentMethod: 'credits' | 'card'
   onPaymentMethodChange: (method: 'credits' | 'card') => void
   onBack: () => void
   onNext: () => void
+  onPaymentReady: (paymentId: string) => void
   onPaymentSuccess: (paymentIntentId: string) => void
   cartItems: CartItemWithBook[]
 }
@@ -343,10 +345,12 @@ function PaymentStep({
   totalCredits,
   userCredits,
   userId,
+  paymentId,
   paymentMethod,
   onPaymentMethodChange,
   onBack,
   onNext,
+  onPaymentReady,
   onPaymentSuccess,
   cartItems,
 }: PaymentStepProps) {
@@ -364,7 +368,13 @@ function PaymentStep({
         try {
           const response = await paymentService.createPaymentIntent({
             user_id: userId,
-            amount: totalPrice,
+            items: cartItems.map(item => ({
+              book_id: item.bookId,
+              quantity: item.quantity,
+              price_cents: item.priceAtAdd,
+              credits: item.creditsAtAdd,
+              title: item.book.title,
+            })),
             currency: 'usd',
             metadata: {
               item_count: String(cartItems.length),
@@ -372,6 +382,7 @@ function PaymentStep({
             },
           })
           setClientSecret(response.client_secret)
+          onPaymentReady(response.payment_id)
         } catch (error) {
           console.error('Failed to create payment intent:', error)
           setPaymentError(error instanceof Error ? error.message : 'Failed to initialize payment')
@@ -488,6 +499,7 @@ function PaymentStep({
                           currency="usd"
                           onSuccess={onPaymentSuccess}
                           onError={(error) => setPaymentError(error)}
+                          returnUrl={`${window.location.origin}/purchase/success?purchase_type=books${paymentId ? `&payment_id=${paymentId}` : ''}`}
                           submitLabel={`Pay ${formatPrice(totalPrice)}`}
                         />
                       </StripeElementsWrapper>
@@ -715,7 +727,7 @@ export default function Checkout() {
   // Local state
   const [paymentMethod, setPaymentMethod] = useState<'credits' | 'card'>('card')
   const [purchasedCount, setPurchasedCount] = useState(0)
-  const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null)
+  const [paymentId, setPaymentId] = useState<string | null>(null)
   
   // Redux state
   const cartItems = useAppSelector(selectCartItems)
@@ -794,11 +806,10 @@ export default function Checkout() {
    * Handle successful Stripe payment
    * When card payment completes, skip to success step
    */
-  const handlePaymentSuccess = (intentId: string) => {
-    setPaymentIntentId(intentId)
+  const handlePaymentSuccess = (_intentId: string) => {
     setPurchasedCount(itemCount)
     // For card payments, we can go directly to success since payment is already processed
-    dispatch(checkout({ paymentMethod: 'card', paymentIntentId: intentId }))
+    dispatch(checkout({ paymentMethod: 'card', paymentId }))
   }
   
   /**
@@ -806,7 +817,7 @@ export default function Checkout() {
    */
   const handleCheckout = () => {
     setPurchasedCount(itemCount)
-    dispatch(checkout({ paymentMethod, paymentIntentId }))
+    dispatch(checkout({ paymentMethod, paymentId }))
   }
   
   // Empty cart redirect handled above
@@ -846,10 +857,12 @@ export default function Checkout() {
             totalCredits={totalCredits}
             userCredits={userCredits}
             userId={user?.id || null}
+            paymentId={paymentId}
             paymentMethod={paymentMethod}
             onPaymentMethodChange={setPaymentMethod}
             onBack={handlePrevStep}
             onNext={handleNextStep}
+            onPaymentReady={setPaymentId}
             onPaymentSuccess={handlePaymentSuccess}
             cartItems={itemsWithBooks}
           />

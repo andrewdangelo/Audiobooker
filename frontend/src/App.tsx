@@ -1,4 +1,7 @@
+import { useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { useAppDispatch } from './store/hooks'
+import { logout } from './store/slices/authSlice'
 import Dashboard from './pages/Dashboard'
 import Upload from './pages/Upload'
 import Library from './pages/Library'
@@ -11,6 +14,7 @@ import AudiobookPreview from './pages/AudiobookPreview'
 import Pricing from './pages/Pricing'
 import Purchase from './pages/Purchase'
 import PurchaseSuccess from './pages/PurchaseSuccess'
+import PurchaseCancel from './pages/PurchaseCancel'
 import Credits from './pages/Credits'
 import NotFound from './pages/NotFound'
 import PlayerDemo from './pages/PlayerDemo'
@@ -27,6 +31,16 @@ import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import './App.css'
 
 function App() {
+  const dispatch = useAppDispatch()
+
+  // When the api interceptor clears tokens due to an expired/invalid refresh,
+  // also reset the Redux auth state so ProtectedRoute redirects to login.
+  useEffect(() => {
+    const handler = () => dispatch(logout())
+    window.addEventListener('auth:expired', handler)
+    return () => window.removeEventListener('auth:expired', handler)
+  }, [dispatch])
+
   return (
     <Router>
       <Routes>
@@ -63,6 +77,7 @@ function App() {
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/purchase" element={<Purchase />} />
           <Route path="/purchase/success" element={<PurchaseSuccess />} />
+          <Route path="/purchase/cancel" element={<PurchaseCancel />} />
           <Route path="/credits" element={<Credits />} />
           <Route path="/player-demo" element={<PlayerDemo />} />
           <Route path="*" element={<NotFound />} />

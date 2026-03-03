@@ -72,10 +72,10 @@ services:
     container_name: audiobooker-payment-service
     restart: unless-stopped
     ports:
-      - "8004:8004"
+      - "8005:8005"
     environment:
       - ENVIRONMENT=development
-      - PORT=8004
+      - PORT=8005
       - MONGODB_URL=mongodb://mongodb:27017
       - MONGODB_DB_NAME=audiobooker_payment
       - AUTH_MONGODB_URL=mongodb://mongodb:27017

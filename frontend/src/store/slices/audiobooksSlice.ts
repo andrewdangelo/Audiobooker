@@ -13,7 +13,7 @@
 
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
-import { demoBooks, DemoBook } from '@/data/demoBooks'
+import { audiobookService } from '@/services/audiobook.service'
 
 // Types
 export interface Audiobook {
@@ -84,21 +84,6 @@ const initialState: AudiobooksState = {
   sortOrder: 'asc',
 }
 
-// Helper to convert DemoBook to Audiobook
-const convertDemoBook = (book: DemoBook): Audiobook => ({
-  id: book.id,
-  title: book.title,
-  author: book.author,
-  description: book.description,
-  coverImage: book.coverImage,
-  duration: book.duration,
-  audioUrl: book.audioUrl,
-  narrator: book.narrator,
-  publishedYear: book.publishedYear,
-  genre: book.genre,
-  chapters: book.chapters,
-})
-
 // Async thunks
 export const fetchAudiobooks = createAsyncThunk(
   'audiobooks/fetchAll',
@@ -106,21 +91,22 @@ export const fetchAudiobooks = createAsyncThunk(
     try {
       const state = getState() as RootState
       const { lastFetched, cacheExpiry } = state.audiobooks
-      
+
       // Return cached data if still valid
       if (lastFetched && Date.now() - lastFetched < cacheExpiry) {
         return null // Signal to use cached data
       }
-      
-      // TODO: Replace with actual API call
-      // const response = await audiobookService.getAll()
-      // return response.data
-      
-      // Use demo books for now
-      await new Promise(resolve => setTimeout(resolve, 500))
-      return demoBooks.map(convertDemoBook)
+
+      const userId = (state as RootState & { auth?: { user?: { id?: string } } }).auth?.user?.id
+      if (!userId) throw new Error('Not authenticated')
+
+      // Fetch from backend via API proxy
+      const books = await audiobookService.getAll(userId)
+      return books
     } catch (error) {
-      return rejectWithValue('Failed to fetch audiobooks')
+      return rejectWithValue(
+        error instanceof Error ? error.message : 'Failed to fetch audiobooks',
+      )
     }
   }
 )
@@ -130,26 +116,22 @@ export const fetchAudiobookById = createAsyncThunk(
   async (id: string, { getState, rejectWithValue }) => {
     try {
       const state = getState() as RootState
-      
+
       // Return cached data if available
       if (state.audiobooks.items[id]) {
         return state.audiobooks.items[id]
       }
-      
-      // TODO: Replace with actual API call
-      // const response = await audiobookService.getById(id)
-      // return response.data
-      
-      // Find in demo books
-      const demoBook = demoBooks.find(b => b.id === id)
-      if (demoBook) {
-        await new Promise(resolve => setTimeout(resolve, 300))
-        return convertDemoBook(demoBook)
-      }
-      
-      throw new Error('Audiobook not found')
+
+      const userId = (state as RootState & { auth?: { user?: { id?: string } } }).auth?.user?.id
+      if (!userId) throw new Error('Not authenticated')
+
+      // Fetch from backend via API proxy
+      const book = await audiobookService.getById(id, userId)
+      return book
     } catch (error) {
-      return rejectWithValue(`Failed to fetch audiobook: ${id}`)
+      return rejectWithValue(
+        error instanceof Error ? error.message : `Failed to fetch audiobook: ${id}`,
+      )
     }
   }
 )

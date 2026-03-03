@@ -11,7 +11,8 @@ import { StripeProvider, StripeElementsWrapper, StripePaymentForm } from '@/comp
 import { paymentService } from '@/services/paymentService';
 import { useAppSelector, useAppDispatch } from '@/store/hooks';
 import { selectCurrentUser } from '@/store/slices/authSlice';
-import { addUserCredits } from '@/store/slices/storeSlice';
+import { purchaseSubscription } from '@/store/slices/subscriptionSlice';
+import { toast } from 'sonner';
 
 // TODO: API Integration
 // POST /api/v1/payments/create-intent - Create payment intent
@@ -35,11 +36,12 @@ export default function Purchase() {
   const dispatch = useAppDispatch();
   const [searchParams] = useSearchParams();
   const [isProcessing, setIsProcessing] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'card' | 'paypal'>('card');
+  const [paymentMethod, setPaymentMethod] = useState<'card'>('card');
   const [agreeToTerms, setAgreeToTerms] = useState(false);
   
   // Stripe state
   const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [paymentId, setPaymentId] = useState<string | null>(null);
   const [isLoadingPaymentIntent, setIsLoadingPaymentIntent] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   
@@ -51,53 +53,61 @@ export default function Purchase() {
   const itemId = searchParams.get('id');
   const billingCycle = searchParams.get('cycle') as 'monthly' | 'annual' | null;
 
-  // TODO: Replace with API call to fetch actual item details
   const [purchaseItem, setPurchaseItem] = useState<PurchaseItem | null>(null);
 
   useEffect(() => {
-    // Mock data - replace with API call
-    if (purchaseType === 'plan' && itemId) {
-      const plans: Record<string, PurchaseItem> = {
-        basic: {
-          type: 'plan',
-          id: 'basic',
-          name: 'Basic Subscription',
-          description: '1 Basic credit per month - Single voice narration',
-          price: billingCycle === 'annual' ? 99.99 : 9.99,
-          credits: 1,
-          billingCycle: billingCycle || 'monthly'
-        },
-        premium: {
-          type: 'plan',
-          id: 'premium',
-          name: 'Premium Subscription',
-          description: '1 Premium credit per month - Multiple character voices',
-          price: billingCycle === 'annual' ? 199.99 : 19.99,
-          credits: 1,
-          billingCycle: billingCycle || 'monthly'
+    const loadPurchaseItem = async () => {
+      if (!purchaseType || !itemId) {
+        setPurchaseItem(null);
+        return;
+      }
+
+      try {
+        if (purchaseType === 'plan') {
+          const plans = await paymentService.getSubscriptionPlans();
+          const plan = plans.find(candidate => candidate.id === itemId);
+          if (!plan) {
+            setPurchaseItem(null);
+            return;
+          }
+
+          const resolvedBillingCycle = billingCycle || 'monthly';
+          const price =
+            (resolvedBillingCycle === 'annual' ? plan.annual_amount_cents : plan.monthly_amount_cents) / 100;
+
+          setPurchaseItem({
+            type: 'plan',
+            id: plan.id,
+            name: `${plan.name} Subscription`,
+            description: `${plan.included_credits} ${plan.included_credit_type} credit per ${resolvedBillingCycle === 'annual' ? 'year' : 'month'} - ${plan.description}`,
+            price,
+            credits: plan.included_credits,
+            billingCycle: resolvedBillingCycle,
+          });
+          return;
         }
-      };
-      setPurchaseItem(plans[itemId] || null);
-    } else if (purchaseType === 'credits' && itemId) {
-      const creditPacks: Record<string, PurchaseItem> = {
-        // Basic Credits
-        'basic-1': { type: 'credits', id: 'basic-1', name: '1 Basic Credit', description: 'Single voice narration', price: 14.95, credits: 1 },
-        'basic-3': { type: 'credits', id: 'basic-3', name: '3 Basic Credits', description: 'Single voice narration', price: 42.99, credits: 3 },
-        'basic-5': { type: 'credits', id: 'basic-5', name: '5 Basic Credits', description: 'Single voice narration', price: 69.99, credits: 5 },
-        'basic-10': { type: 'credits', id: 'basic-10', name: '10 Basic Credits', description: 'Single voice narration', price: 129.99, credits: 10 },
-        // Premium Credits
-        'premium-1': { type: 'credits', id: 'premium-1', name: '1 Premium Credit', description: 'Multiple character voices', price: 24.95, credits: 1 },
-        'premium-3': { type: 'credits', id: 'premium-3', name: '3 Premium Credits', description: 'Multiple character voices', price: 71.99, credits: 3 },
-        'premium-5': { type: 'credits', id: 'premium-5', name: '5 Premium Credits', description: 'Multiple character voices', price: 117.99, credits: 5 },
-        'premium-10': { type: 'credits', id: 'premium-10', name: '10 Premium Credits', description: 'Multiple character voices', price: 229.99, credits: 10 }
-      };
-      setPurchaseItem(creditPacks[itemId] || null);
-    }
+
+        const pack = await paymentService.getCreditPack(itemId);
+        setPurchaseItem({
+          type: 'credits',
+          id: pack.id,
+          name: pack.name,
+          description: pack.description,
+          price: pack.amount_cents / 100,
+          credits: pack.credits,
+        });
+      } catch (error) {
+        console.error('Failed to load purchase item:', error);
+        setPurchaseItem(null);
+      }
+    };
+
+    loadPurchaseItem();
   }, [purchaseType, itemId, billingCycle]);
 
-  // Create payment intent when card payment is selected and we have a purchase item
+  // Create payment intent when card payment is selected — credits only (plans use subscription checkout)
   useEffect(() => {
-    if (paymentMethod === 'card' && purchaseItem && user?.id && !clientSecret) {
+    if (paymentMethod === 'card' && purchaseItem && purchaseItem.type !== 'plan' && user?.id && !clientSecret) {
       const createPaymentIntent = async () => {
         setIsLoadingPaymentIntent(true);
         setPaymentError(null);
@@ -113,7 +123,7 @@ export default function Purchase() {
             amount: amountCents,
             currency: 'usd',
             metadata: {
-              purchase_type: purchaseItem.type,
+              purchase_type: 'credits',
               item_id: purchaseItem.id,
               item_name: purchaseItem.name,
               credits: String(purchaseItem.credits || 0),
@@ -121,6 +131,7 @@ export default function Purchase() {
             },
           });
           setClientSecret(response.client_secret);
+          setPaymentId(response.payment_id);
         } catch (error) {
           console.error('Failed to create payment intent:', error);
           setPaymentError(error instanceof Error ? error.message : 'Failed to initialize payment');
@@ -133,19 +144,57 @@ export default function Purchase() {
   }, [paymentMethod, purchaseItem, user?.id, clientSecret]);
 
   // Reset client secret when switching payment methods
-  const handlePaymentMethodChange = (method: 'card' | 'paypal') => {
+  const handlePaymentMethodChange = (method: 'card') => {
     if (method !== paymentMethod) {
       setClientSecret(null);
+      setPaymentId(null);
       setPaymentError(null);
     }
     setPaymentMethod(method);
   };
 
+  // Handle plan subscription via Stripe checkout session
+  const handleSubscribePlan = async () => {
+    if (!user?.id || !purchaseItem) return;
+    setIsProcessing(true);
+    setPaymentError(null);
+    try {
+      const result = await dispatch(
+        purchaseSubscription({
+          userId: user.id,
+          plan: purchaseItem.id as 'basic' | 'premium' | 'publisher',
+          billingCycle: purchaseItem.billingCycle || 'monthly',
+        })
+      ).unwrap();
+
+      if (result.checkout_url) {
+        window.location.href = result.checkout_url;
+      } else if (result.already_subscribed) {
+        toast.info('Already subscribed', { description: result.message });
+        navigate('/credits');
+      } else {
+        toast.success('Subscribed!', { description: result.message });
+        navigate('/credits');
+      }
+    } catch (err: any) {
+      setPaymentError(err || 'Failed to start subscription');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   // Handle successful Stripe payment
-  const handlePaymentSuccess = (paymentIntentId: string) => {
-    // Update user credits in Redux if this is a credit purchase
-    if (purchaseItem?.type === 'credits' && purchaseItem.credits) {
-      dispatch(addUserCredits(purchaseItem.credits));
+  const handlePaymentSuccess = async (paymentIntentId: string) => {
+    // For credit purchases: call the backend to synchronously write credits to the DB
+    // before navigating to the success page (which re-fetches credits from DB).
+    // This avoids the race condition where the Stripe webhook arrives after fetchUserCredits.
+    if (purchaseItem?.type === 'credits') {
+      try {
+        await paymentService.completeCreditPurchase(paymentIntentId);
+      } catch (err) {
+        // Non-fatal: success page will still show and webhook may still fire
+        console.error('completeCreditPurchase failed:', err);
+      }
     }
 
     navigate('/purchase/success', { 
@@ -155,40 +204,6 @@ export default function Purchase() {
         paymentIntentId,
       } 
     });
-  };
-
-  // Handle PayPal payment (placeholder)
-  const handlePayPalSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!agreeToTerms) {
-      alert('Please agree to the terms and conditions');
-      return;
-    }
-
-    setIsProcessing(true);
-
-    try {
-      // TODO: Integrate PayPal
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Update user credits in Redux if this is a credit purchase
-      if (purchaseItem?.type === 'credits' && purchaseItem.credits) {
-        dispatch(addUserCredits(purchaseItem.credits));
-      }
-
-      navigate('/purchase/success', { 
-        state: { 
-          item: purchaseItem,
-          purchaseDate: new Date().toISOString()
-        } 
-      });
-    } catch (error) {
-      console.error('Payment failed:', error);
-      alert('Payment failed. Please try again.');
-    } finally {
-      setIsProcessing(false);
-    }
   };
 
   if (!purchaseItem) {
@@ -231,7 +246,7 @@ export default function Purchase() {
                 {/* Payment Method Selection */}
                 <div className="space-y-3">
                   <Label>Payment Method</Label>
-                  <RadioGroup value={paymentMethod} onValueChange={(val) => handlePaymentMethodChange(val as 'card' | 'paypal')}>
+                  <RadioGroup value={paymentMethod} onValueChange={(val) => handlePaymentMethodChange(val as 'card')}>
                     <div className="flex items-center space-x-2 border rounded-lg p-4">
                       <RadioGroupItem value="card" id="card" />
                       <Label htmlFor="card" className="flex-1 cursor-pointer">
@@ -239,12 +254,6 @@ export default function Purchase() {
                           <CreditCard className="h-5 w-5" />
                           <span>Credit/Debit Card</span>
                         </div>
-                      </Label>
-                    </div>
-                    <div className="flex items-center space-x-2 border rounded-lg p-4">
-                      <RadioGroupItem value="paypal" id="paypal" />
-                      <Label htmlFor="paypal" className="flex-1 cursor-pointer">
-                        PayPal
                       </Label>
                     </div>
                   </RadioGroup>
@@ -265,6 +274,57 @@ export default function Purchase() {
                         >
                           Sign In
                         </Button>
+                      </div>
+                    ) : purchaseItem.type === 'plan' ? (
+                      /* Subscription plans go through Stripe Checkout — no embedded card form */
+                      <div className="space-y-4">
+                        {paymentError && (
+                          <div className="p-4 bg-destructive/10 text-destructive rounded-md flex items-center gap-2">
+                            <AlertCircle className="h-5 w-5" />
+                            <span className="text-sm">{paymentError}</span>
+                          </div>
+                        )}
+                        <div className="flex items-start space-x-2">
+                          <Checkbox
+                            id="terms"
+                            checked={agreeToTerms}
+                            onChange={(e) => setAgreeToTerms(e.target.checked)}
+                          />
+                          <label
+                            htmlFor="terms"
+                            className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                          >
+                            I agree to the{' '}
+                            <a href="/terms" className="text-primary underline" target="_blank">
+                              Terms and Conditions
+                            </a>{' '}
+                            and{' '}
+                            <a href="/privacy" className="text-primary underline" target="_blank">
+                              Privacy Policy
+                            </a>
+                          </label>
+                        </div>
+                        <Button
+                          className="w-full"
+                          size="lg"
+                          disabled={isProcessing || !agreeToTerms}
+                          onClick={handleSubscribePlan}
+                        >
+                          {isProcessing ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              Redirecting...
+                            </>
+                          ) : (
+                            <>
+                              <Lock className="h-4 w-4 mr-2" />
+                              Subscribe — ${purchaseItem.price.toFixed(2)}/{purchaseItem.billingCycle === 'annual' ? 'yr' : 'mo'}
+                            </>
+                          )}
+                        </Button>
+                        <p className="text-xs text-center text-muted-foreground">
+                          You will be redirected to Stripe to complete your subscription.
+                        </p>
                       </div>
                     ) : isLoadingPaymentIntent ? (
                       <div className="p-4 bg-muted/50 rounded-md flex items-center justify-center">
@@ -307,6 +367,7 @@ export default function Purchase() {
                               currency="usd"
                               onSuccess={handlePaymentSuccess}
                               onError={(error) => setPaymentError(error)}
+                              returnUrl={`${window.location.origin}/purchase/success?purchase_type=credits&item_id=${purchaseItem.id}${paymentId ? `&payment_id=${paymentId}` : ''}`}
                               submitLabel={`Pay $${purchaseItem.price.toFixed(2)}`}
                             />
                           </StripeElementsWrapper>
@@ -325,59 +386,6 @@ export default function Purchase() {
                       </div>
                     )}
                   </div>
-                )}
-
-                {/* PayPal Payment */}
-                {paymentMethod === 'paypal' && (
-                  <form onSubmit={handlePayPalSubmit} className="space-y-4">
-                    <Separator />
-                    
-                    {/* Terms and Conditions */}
-                    <div className="flex items-start space-x-2">
-                      <Checkbox 
-                        id="terms-paypal" 
-                        checked={agreeToTerms}
-                        onChange={(e) => setAgreeToTerms(e.target.checked)}
-                      />
-                      <label
-                        htmlFor="terms-paypal"
-                        className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                      >
-                        I agree to the{' '}
-                        <a href="/terms" className="text-primary underline" target="_blank">
-                          Terms and Conditions
-                        </a>{' '}
-                        and{' '}
-                        <a href="/privacy" className="text-primary underline" target="_blank">
-                          Privacy Policy
-                        </a>
-                      </label>
-                    </div>
-
-                    <Button
-                      type="submit"
-                      className="w-full"
-                      size="lg"
-                      disabled={isProcessing || !agreeToTerms}
-                    >
-                      {isProcessing ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          Processing...
-                        </>
-                      ) : (
-                        <>
-                          <Lock className="h-4 w-4 mr-2" />
-                          Pay with PayPal ${purchaseItem.price.toFixed(2)}
-                        </>
-                      )}
-                    </Button>
-
-                    <p className="text-xs text-center text-muted-foreground">
-                      <Lock className="h-3 w-3 inline mr-1" />
-                      You will be redirected to PayPal to complete your payment
-                    </p>
-                  </form>
                 )}
 
                 <p className="text-xs text-center text-muted-foreground">

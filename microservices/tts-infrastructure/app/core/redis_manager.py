@@ -70,9 +70,13 @@ class RedisManager(RedisKeys):
             await self.redis.ping()
         except Exception:
             print("Redis connection lost, reconnecting...")
-            #TODO remove this way to start redis server and dedicate a vm for redis server or microservice. SUPER TEMPORARY FIX
-            # import subprocess as sp
-            # sp.run('wsl -d Ubuntu bash -c "sudo service redis-server start"', shell=True, capture_output=True)
+            self.redis = None
+            if self._connection_pool:
+                try:
+                    await self._connection_pool.disconnect()
+                except Exception:
+                    pass
+            self._connection_pool = None
             await self.connect()
     
     async def disconnect(self):

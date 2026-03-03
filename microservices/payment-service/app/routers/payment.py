@@ -14,9 +14,12 @@ import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Header, Depends
 from fastapi.responses import JSONResponse
+from bson import ObjectId
 
 from app.core.config_settings import settings
 from app.services.stripe_service import stripe_service
+from app.database.mongodb import MongoDB
+from app.services import service_client
 from app.models.schemas import (
     CreatePaymentIntentRequest,
     CreateCheckoutSessionRequest,
@@ -240,6 +243,85 @@ async def pay_with_credits(request: ProcessCreditsPaymentRequest):
 
 
 # =========================================================================
+# COMPLETE CREDIT PURCHASE (called by frontend after Stripe payment succeeds)
+# =========================================================================
+
+@router.post("/complete-credit-purchase", tags=["Credits"])
+async def complete_credit_purchase(body: dict):
+    """
+    Synchronously grant credits after a successful Stripe payment intent.
+
+    Called by the frontend immediately after Stripe.js confirms the payment,
+    so credits are in the DB before the success page fetches the user profile.
+    Idempotent — safe to call multiple times for the same payment intent.
+    """
+    from datetime import datetime
+
+    payment_intent_id = body.get("payment_intent_id")
+    if not payment_intent_id:
+        raise HTTPException(status_code=400, detail="payment_intent_id is required")
+
+    payment = await MongoDB.get_db().payments.find_one(
+        {"stripe_payment_intent_id": payment_intent_id}
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found")
+
+    # Idempotency guard — don't double-grant
+    if payment.get("credits_granted"):
+        return {
+            "status": "already_granted",
+            "credits_added": payment.get("credits_granted_amount", 0),
+            "credit_type": payment.get("credits_granted_type", "basic"),
+        }
+
+    metadata = payment.get("metadata", {})
+    purchase_type = metadata.get("purchase_type")
+    if purchase_type not in ("credits", "plan"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not a credit purchase (purchase_type={purchase_type})",
+        )
+
+    credits_to_add = int(metadata.get("credits", 0))
+    credit_type = metadata.get("credit_type", "basic")
+    user_id = payment.get("user_id")
+
+    if credits_to_add <= 0:
+        raise HTTPException(status_code=400, detail="No credits to add for this payment")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="No user_id on payment record")
+
+    credit_field = "premium_credits" if credit_type == "premium" else "basic_credits"
+    updated = await service_client.update_user_credits(user_id, {
+        credit_field: credits_to_add,
+        "credits": credits_to_add,
+    })
+
+    if not updated:
+        raise HTTPException(status_code=502, detail="Failed to update user credits")
+
+    # Mark as granted so the webhook doesn't double-count
+    await MongoDB.get_db().payments.update_one(
+        {"stripe_payment_intent_id": payment_intent_id},
+        {"$set": {
+            "credits_granted": True,
+            "credits_granted_amount": credits_to_add,
+            "credits_granted_type": credit_type,
+            "status": "succeeded",
+            "updated_at": datetime.utcnow(),
+        }},
+    )
+
+    logger.info(f"Granted {credits_to_add} {credit_type} credits to user {user_id} for payment {payment_intent_id}")
+    return {
+        "status": "granted",
+        "credits_added": credits_to_add,
+        "credit_type": credit_type,
+    }
+
+
+# =========================================================================
 # PAYMENT STATUS ENDPOINTS
 # =========================================================================
 
@@ -252,15 +334,7 @@ async def get_payment_status(payment_id: str):
         payment = await stripe_service.get_payment_status(payment_id)
         if not payment:
             raise HTTPException(status_code=404, detail="Payment not found")
-        
-        return {
-            "payment_id": payment["_id"],
-            "status": payment["status"],
-            "amount_cents": payment["amount_cents"],
-            "currency": payment["currency"],
-            "payment_method": payment["payment_method"],
-            "created_at": payment["created_at"].isoformat() if payment.get("created_at") else None,
-        }
+        return payment
     except HTTPException:
         raise
     except Exception as e:
@@ -288,7 +362,22 @@ async def get_user_orders(user_id: str, limit: int = 50):
     """
     try:
         orders = await stripe_service.get_user_orders(user_id, limit)
-        return {"orders": orders, "count": len(orders)}
+        normalized_orders = []
+        for order in orders:
+            normalized_orders.append(
+                {
+                    "order_id": order["_id"],
+                    "user_id": order["user_id"],
+                    "payment_id": order["payment_id"],
+                    "items": order.get("items", []),
+                    "total_cents": order.get("total_cents", 0),
+                    "total_credits": order.get("total_credits", 0),
+                    "status": order.get("status"),
+                    "payment_method": order.get("payment_method"),
+                    "created_at": order.get("created_at"),
+                }
+            )
+        return {"orders": normalized_orders, "count": len(normalized_orders)}
     except Exception as e:
         logger.error(f"Error getting user orders: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to get user orders")
@@ -327,8 +416,7 @@ async def manually_process_payment(payment_id: str):
     """
     try:
         from app.database.mongodb import MongoDB
-        from bson import ObjectId
-        from datetime import datetime
+        from app.services import service_client
         
         # Get payment
         payment = await MongoDB.get_db().payments.find_one({"_id": ObjectId(payment_id)})
@@ -356,19 +444,13 @@ async def manually_process_payment(payment_id: str):
         # Determine which credit field to update
         credit_field = "premium_credits" if credit_type == "premium" else "basic_credits"
         
-        # Add credits to user
-        result = await MongoDB.get_auth_db().users.update_one(
-            {"_id": ObjectId(user_id)},
-            {
-                "$inc": {
-                    credit_field: credits_to_add,
-                    "credits": credits_to_add  # Legacy total
-                },
-                "$set": {"updated_at": datetime.utcnow()}
-            }
-        )
-        
-        if result.modified_count > 0:
+        # Add credits to user via auth-service API
+        updated = await service_client.update_user_credits(user_id, {
+            credit_field: credits_to_add,
+            "credits": credits_to_add,  # Legacy total
+        })
+
+        if updated:
             logger.info(f"Manually added {credits_to_add} {credit_type} credits to user {user_id}")
             return {
                 "status": "success",

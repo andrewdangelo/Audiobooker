@@ -19,6 +19,7 @@ class SubscriptionPlan(str, Enum):
     NONE = "none"
     BASIC = "basic"
     PREMIUM = "premium"
+    PUBLISHER = "publisher"
 
 
 class SubscriptionStatus(str, Enum):

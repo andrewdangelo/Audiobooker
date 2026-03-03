@@ -32,7 +32,7 @@ const Settings = () => {
   const token = useAppSelector(selectAuthToken);
   const subscription = useAppSelector(selectSubscription);
   const isSubscribed = useAppSelector(selectIsSubscribed);
-  const currentPlan = useAppSelector(selectSubscriptionPlan);
+  const currentPlan = useAppSelector(selectSubscriptionPlan)
   
   // Get initial tab from URL query param
   const initialTab = searchParams.get('tab') || 'profile';
@@ -40,6 +40,16 @@ const Settings = () => {
   
   // Cancel subscription modal
   const [showCancelModal, setShowCancelModal] = useState(false);
+
+  const handleCancelModalClose = () => {
+    setShowCancelModal(false);
+    // Re-fetch subscription so the page reflects the latest status from the DB
+    // (covers the case where the server updated the status but the client
+    // never received a successful response due to an earlier error)
+    if (token) {
+      dispatch(fetchUserSubscription());
+    }
+  };
   
   // Form state initialized from Redux user data
   const [userData, setUserData] = useState({
@@ -87,7 +97,7 @@ const Settings = () => {
     try {
       await dispatch(resubscribe({
         userId: user.id,
-        plan: currentPlan as 'basic' | 'premium',
+        plan: currentPlan as 'basic' | 'premium' | 'publisher',
         billingCycle: subscription.billingCycle || 'monthly',
       })).unwrap();
       
@@ -631,7 +641,7 @@ const Settings = () => {
       {/* Cancel Subscription Modal */}
       <CancelSubscriptionModal 
         open={showCancelModal} 
-        onClose={() => setShowCancelModal(false)} 
+        onClose={handleCancelModalClose} 
       />
     </div>
   );

@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     
     # Environment
     ENVIRONMENT: str = Field(default="development", description="Environment: development, staging, production")
-    PORT: int = Field(default=8001, description="Service port")
+    PORT: int = Field(default=8004, description="Service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     DEBUG: bool = True
     TEST_VERSION: str = Field(default="Check ENV Version...", description="Application test version")
@@ -67,7 +67,13 @@ class Settings(BaseSettings):
     LLM_DISCOVERY_CHARS: int = Field(default=20000, description="Characters to use for character discovery")
     LLM_DELAY_BETWEEN_REQUESTS: float = Field(default=3.0, description="Seconds to wait between LLM requests")
     ENABLE_LLM_CHUNKING: bool = Field(default=False, description="Enable automatic LLM-based speaker chunking")
-    
+
+    # Internal service-to-service auth key
+    INTERNAL_SERVICE_KEY: str = Field(
+        default="change-me-internal-key",
+        description="Shared secret used to authenticate inter-service HTTP calls"
+    )
+
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         """Validate environment values"""

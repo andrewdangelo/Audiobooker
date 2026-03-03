@@ -21,6 +21,7 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import { paymentService } from '@/services/paymentService'
+import { cartApiService } from '@/services/backendService'
 
 // ============================================================================
 // TYPES
@@ -77,40 +78,21 @@ const initialState: CartState = {
 
 /**
  * Sync cart with backend
- * 
- * TODO: API INTEGRATION
- * This thunk should sync the local cart state with the backend.
- * This enables cart persistence across devices and sessions.
- * 
- * API Endpoint: POST /api/v1/cart/sync
- * Request Body: { items: CartItem[] }
- * Response: { items: CartItem[], lastSyncedAt: string }
+ *
+ * Syncs local cart state to the server so the cart persists across devices.
+ * API: POST /backend/cart/sync
  */
 export const syncCart = createAsyncThunk(
   'cart/sync',
   async (_, { getState, rejectWithValue }) => {
     try {
       const state = getState() as RootState
+      const userId: string = (state as { auth?: { user?: { id?: string } } }).auth?.user?.id ?? ''
       const cartItems = state.cart.itemIds.map((id: string) => state.cart.items[id])
-      
-      // TODO: API INTEGRATION
-      // Replace with actual API call:
-      // const response = await fetch(`${API_BASE_URL}/cart/sync`, {
-      //   method: 'POST',
-      //   headers: { 
-      //     'Content-Type': 'application/json',
-      //     'Authorization': `Bearer ${state.auth.token}`
-      //   },
-      //   body: JSON.stringify({ items: cartItems })
-      // })
-      // if (!response.ok) throw new Error('Failed to sync cart')
-      // return await response.json()
-      
-      // Mock response - just return current state
-      await new Promise(resolve => setTimeout(resolve, 300))
+      const data = await cartApiService.sync(userId, cartItems)
       return {
-        items: cartItems,
-        lastSyncedAt: new Date().toISOString(),
+        items: (data.items as CartItem[]) ?? cartItems,
+        lastSyncedAt: (data.last_synced_at as string) ?? new Date().toISOString(),
       }
     } catch (error) {
       return rejectWithValue('Failed to sync cart')
@@ -120,43 +102,21 @@ export const syncCart = createAsyncThunk(
 
 /**
  * Validate cart items before checkout
- * 
- * TODO: API INTEGRATION
- * This thunk should validate that all cart items are still available
- * and that prices haven't changed significantly.
- * 
- * API Endpoint: POST /api/v1/cart/validate
- * Request Body: { items: CartItem[] }
- * Response: { valid: boolean, invalidItems: string[], priceChanges: PriceChange[] }
+ *
+ * Verifies that all cart items are still available and prices are current.
+ * API: POST /backend/cart/validate
  */
 export const validateCart = createAsyncThunk(
   'cart/validate',
   async (_, { getState, rejectWithValue }) => {
     try {
       const state = getState() as RootState
-      // Cart items would be sent to API for validation
-      // const cartItems = state.cart.itemIds.map((id: string) => state.cart.items[id])
-      void state // Mark as used for now
-      
-      // TODO: API INTEGRATION
-      // Replace with actual API call:
-      // const response = await fetch(`${API_BASE_URL}/cart/validate`, {
-      //   method: 'POST',
-      //   headers: { 
-      //     'Content-Type': 'application/json',
-      //     'Authorization': `Bearer ${state.auth.token}`
-      //   },
-      //   body: JSON.stringify({ items: cartItems })
-      // })
-      // if (!response.ok) throw new Error('Failed to validate cart')
-      // return await response.json()
-      
-      // Mock response - all items valid
-      await new Promise(resolve => setTimeout(resolve, 500))
+      const userId: string = (state as { auth?: { user?: { id?: string } } }).auth?.user?.id ?? ''
+      const data = await cartApiService.validate(userId)
       return {
-        valid: true,
-        invalidItems: [],
-        priceChanges: [],
+        valid: (data.valid as boolean) ?? true,
+        invalidItems: (data.invalid_items as string[]) ?? [],
+        priceChanges: (data.price_changes as unknown[]) ?? [],
       }
     } catch (error) {
       return rejectWithValue('Failed to validate cart')
@@ -178,25 +138,31 @@ export const validateCart = createAsyncThunk(
 export const checkout = createAsyncThunk(
   'cart/checkout',
   async (
-    { paymentMethod, paymentIntentId }: { paymentMethod: 'credits' | 'card'; paymentIntentId?: string | null },
+    { paymentMethod, paymentId }: { paymentMethod: 'credits' | 'card'; paymentId?: string | null },
     { getState, rejectWithValue }
   ) => {
     try {
       const state = getState() as RootState
       const cartItems = state.cart.itemIds.map((id: string) => state.cart.items[id])
-      const totalCredits = cartItems.reduce((sum: number, item: CartItem) => sum + item.creditsAtAdd * item.quantity, 0)
-      const totalPrice = cartItems.reduce((sum: number, item: CartItem) => sum + item.priceAtAdd * item.quantity, 0)
       const userId = state.auth?.user?.id
 
       if (!userId) {
         throw new Error('User not authenticated')
       }
 
+      const paymentItems = cartItems.map((item: CartItem) => ({
+        book_id: item.bookId,
+        quantity: item.quantity,
+        price_cents: item.priceAtAdd,
+        credits: item.creditsAtAdd,
+        title: state.store.books[item.bookId]?.title || `Book ${item.bookId}`,
+      }))
+
       if (paymentMethod === 'credits') {
         // Process credits payment via payment service
         const response = await paymentService.payWithCredits({
           user_id: userId,
-          amount: totalPrice,
+          items: paymentItems,
           currency: 'usd',
           metadata: {
             item_count: String(cartItems.length),
@@ -212,17 +178,19 @@ export const checkout = createAsyncThunk(
         }
       } else {
         // Card payment - the payment intent was already confirmed via Stripe Elements
-        // Just verify the payment was successful if we have a payment intent ID
-        if (paymentIntentId) {
-          const paymentStatus = await paymentService.getPaymentStatus(paymentIntentId)
-          if (paymentStatus.status !== 'succeeded') {
-            throw new Error(`Payment not completed: ${paymentStatus.status}`)
-          }
+        if (!paymentId) {
+          throw new Error('Missing payment record')
+        }
+
+        // Just verify the payment was successful if we have a payment record ID
+        const paymentStatus = await paymentService.getPaymentStatus(paymentId)
+        if (paymentStatus.status !== 'succeeded') {
+          throw new Error(`Payment not completed: ${paymentStatus.status}`)
         }
 
         return {
           success: true,
-          orderId: paymentIntentId || `ORD-${Date.now()}`,
+          orderId: paymentId,
           purchasedBooks: cartItems.map((item: CartItem) => item.bookId),
           remainingCredits: state.store.userCredits,
         }

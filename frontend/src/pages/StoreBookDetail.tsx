@@ -59,6 +59,7 @@ import { cn } from '@/lib/utils'
 import { AddToCartModal } from '@/components/cart/AddToCartModal'
 import { CartSidebar } from '@/components/cart/CartSidebar'
 import { useAppDispatch, useAppSelector } from '@/store/hooks'
+import { addToCart } from '@/store/slices/cartSlice'
 import { 
   fetchStoreBookDetails,
   purchaseBook,
@@ -549,16 +550,13 @@ export default function StoreBookDetail() {
   const handlePurchaseWithCard = async () => {
     if (!book) return
     
-    setIsPurchasing(true)
-    try {
-      // TODO: Open payment modal or redirect to checkout
-      await dispatch(purchaseBook({ bookId: book.id, useCredits: false })).unwrap()
-      navigate('/library')
-    } catch (error) {
-      console.error('Purchase failed:', error)
-    } finally {
-      setIsPurchasing(false)
-    }
+    dispatch(addToCart({
+      bookId: book.id,
+      price: book.price,
+      credits: book.credits,
+      quantity: 1,
+    }))
+    navigate('/checkout')
   }
 
   // Loading state
@@ -616,13 +614,13 @@ export default function StoreBookDetail() {
       </Button>
 
       {/* Main Content Grid */}
-      <div className="grid lg:grid-cols-[350px_1fr_320px] gap-8">
+      <div className="grid lg:grid-cols-[350px_1fr_320px] gap-8 lg:gap-8">
         {/* ============================================================== */}
         {/* LEFT COLUMN - Book Cover & Sample */}
         {/* ============================================================== */}
-        <div className="space-y-6">
+        <div className="order-1 lg:order-none space-y-6">
           {/* Book Cover */}
-          <div className="relative">
+          <div className="relative max-w-[280px] mx-auto lg:max-w-none">
             <div className="aspect-[3/4] rounded-xl overflow-hidden shadow-2xl bg-gradient-to-br from-primary/20 to-primary/40">
               {book.coverImage ? (
                 <img
@@ -675,7 +673,7 @@ export default function StoreBookDetail() {
         {/* ============================================================== */}
         {/* CENTER COLUMN - Book Details */}
         {/* ============================================================== */}
-        <div className="space-y-8">
+        <div className="order-3 lg:order-none space-y-8">
           {/* Genre Badge */}
           <div className="flex flex-wrap gap-2">
             <Badge variant="secondary" className="text-sm">
@@ -690,7 +688,7 @@ export default function StoreBookDetail() {
 
           {/* Title & Author */}
           <div>
-            <h1 className="text-3xl lg:text-4xl font-bold mb-2">{book.title}</h1>
+            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold mb-2">{book.title}</h1>
             <p className="text-xl text-muted-foreground">
               by <span className="text-foreground font-medium">{book.author}</span>
             </p>
@@ -704,7 +702,7 @@ export default function StoreBookDetail() {
           />
 
           {/* Key Metadata */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             <MetaItem 
               icon={Clock} 
               label="Length" 
@@ -810,7 +808,7 @@ export default function StoreBookDetail() {
         {/* ============================================================== */}
         {/* RIGHT COLUMN - Purchase Section (Sticky) */}
         {/* ============================================================== */}
-        <div className="lg:sticky lg:top-8 h-fit space-y-6">
+        <div className="order-2 lg:order-none lg:sticky lg:top-8 h-fit space-y-6">
           {/* Purchase Card */}
           <PurchaseSection
             book={book}

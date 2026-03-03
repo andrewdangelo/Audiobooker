@@ -4,6 +4,8 @@ import { useState, useRef } from 'react'
 import { uploadService } from '../../services/upload.service'
 import { Button } from '../ui/button'
 import UploadProgress from './UploadProgress'
+import { useAppSelector } from '@/store/hooks'
+import { selectCurrentUser } from '@/store/slices/authSlice'
 
 export default function FileUpload() {
   const [isDragging, setIsDragging] = useState(false)
@@ -13,6 +15,7 @@ export default function FileUpload() {
   const [uploadResult, setUploadResult] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const currentUser = useAppSelector(selectCurrentUser)
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -67,7 +70,7 @@ export default function FileUpload() {
     setProgress(0)
     
     try {
-      const result = await uploadService.uploadPDF(selectedFile, (prog) => {
+      const result = await uploadService.uploadPDF(selectedFile, currentUser?.id ?? '', (prog) => {
         setProgress(prog)
       })
       

@@ -32,7 +32,7 @@ export interface AuthUser {
   basic_credits?: number
   premium_credits?: number
   // Subscription fields
-  subscription_plan?: 'none' | 'basic' | 'premium'
+  subscription_plan?: 'none' | 'basic' | 'premium' | 'publisher'
   subscription_status?: 'none' | 'active' | 'cancelled' | 'expired' | 'pending_cancellation'
   subscription_billing_cycle?: 'monthly' | 'annual' | null
   subscription_end_date?: string | null

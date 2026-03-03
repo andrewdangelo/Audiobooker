@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     
     # Environment
     ENVIRONMENT: str = Field(default="development", description="Environment: development, staging, production")
-    PORT: int = Field(default=8004, description="Service port")
+    PORT: int = Field(default=8005, description="Service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     DEBUG: bool = True
     TEST_VERSION: str = Field(default="1.0.0", description="Application version")
@@ -42,10 +42,17 @@ class Settings(BaseSettings):
     MONGODB_MAX_POOL_SIZE: int = Field(default=10, description="Maximum connection pool size")
     MONGODB_MIN_POOL_SIZE: int = Field(default=1, description="Minimum connection pool size")
     
-    # Auth Service MongoDB (for user lookups)
-    AUTH_MONGODB_URL: str = Field(default="mongodb://localhost:27017", description="Auth MongoDB connection URL")
-    AUTH_MONGODB_DB_NAME: str = Field(default="audiobooker_auth", description="Auth MongoDB database name")
-    
+    # Inter-service communication via the API proxy
+    # The proxy forwards /auth/internal/* and /backend/internal/* to the respective services.
+    PROXY_URL: str = Field(
+        default="http://localhost:8000/api/v1/audiobooker_proxy",
+        description="Base URL of the API proxy used for inter-service calls"
+    )
+    INTERNAL_SERVICE_KEY: str = Field(
+        default="change-me-internal-key",
+        description="Shared secret sent in X-Internal-Service-Key for service-to-service requests"
+    )
+
     # Stripe Configuration
     # In development, use test keys from Stripe dashboard (sk_test_*, pk_test_*)
     # In production, use live keys (sk_live_*, pk_live_*)
@@ -56,10 +63,16 @@ class Settings(BaseSettings):
     # Stripe Settings
     STRIPE_API_VERSION: str = Field(default="2023-10-16", description="Stripe API version")
     STRIPE_CURRENCY: str = Field(default="usd", description="Default currency for payments")
+    STRIPE_BASIC_MONTHLY_PRICE_ID: str = Field(default="", description="Stripe Price ID for basic monthly subscription")
+    STRIPE_BASIC_ANNUAL_PRICE_ID: str = Field(default="", description="Stripe Price ID for basic annual subscription")
+    STRIPE_PREMIUM_MONTHLY_PRICE_ID: str = Field(default="", description="Stripe Price ID for premium monthly subscription")
+    STRIPE_PREMIUM_ANNUAL_PRICE_ID: str = Field(default="", description="Stripe Price ID for premium annual subscription")
+    STRIPE_PUBLISHER_MONTHLY_PRICE_ID: str = Field(default="", description="Stripe Price ID for publisher monthly subscription")
+    STRIPE_PUBLISHER_ANNUAL_PRICE_ID: str = Field(default="", description="Stripe Price ID for publisher annual subscription")
     
     # Payment Settings
-    PAYMENT_SUCCESS_URL: str = Field(default="http://localhost:5173/checkout/success", description="URL to redirect after successful payment")
-    PAYMENT_CANCEL_URL: str = Field(default="http://localhost:5173/checkout/cancel", description="URL to redirect after cancelled payment")
+    PAYMENT_SUCCESS_URL: str = Field(default="http://localhost:5173/purchase/success", description="URL to redirect after successful payment")
+    PAYMENT_CANCEL_URL: str = Field(default="http://localhost:5173/purchase/cancel", description="URL to redirect after cancelled payment")
     
     # CORS
     CORS_ORIGINS: List[str] = Field(
@@ -72,7 +85,7 @@ class Settings(BaseSettings):
     ALGORITHM: str = Field(default="HS256", description="Algorithm for JWT verification")
     
     # Auth Service URL (for user validation)
-    AUTH_SERVICE_URL: str = Field(default="http://localhost:8003/api/v1/auth", description="Auth Service URL")
+    AUTH_SERVICE_URL: str = Field(default="http://localhost:8001/api/v1/auth", description="Auth Service URL")
     
     # Redis Configuration (optional, for caching)
     REDIS_HOST: str = Field(default="localhost", description="Redis host")

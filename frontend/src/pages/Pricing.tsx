@@ -4,13 +4,12 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Check, Zap, Star, Loader2, AlertCircle } from 'lucide-react';
+import { Check, Zap, Star, Building, Loader2 } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store/hooks';
 import { selectCurrentUser } from '@/store/slices/authSlice';
 import { 
   selectIsSubscribed, 
   selectSubscriptionPlan, 
-  selectSubscriptionStatus,
   purchaseSubscription,
   selectSubscription,
 } from '@/store/slices/subscriptionSlice';
@@ -19,6 +18,7 @@ import {
   SubscriptionStatusCard, 
   AlreadySubscribedAlert 
 } from '@/components/subscription/SubscriptionComponents';
+import { paymentService } from '@/services/paymentService';
 import { toast } from 'sonner';
 
 // TODO: API Integration
@@ -33,14 +33,13 @@ interface PricingPlan {
   credits: number;
   features: string[];
   isPopular?: boolean;
-  icon: 'basic' | 'premium' | 'pro';
+  icon: 'basic' | 'premium' | 'pro' | 'publisher';
 }
 
 interface CreditPackage {
   id: string;
   credits: number;
   price: number;
-  bonus?: number;
   type?: 'basic' | 'premium';
 }
 
@@ -52,67 +51,63 @@ export default function Pricing() {
   const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
   const [showAlreadySubscribed, setShowAlreadySubscribed] = useState(false);
   const [alreadySubscribedMessage, setAlreadySubscribedMessage] = useState('');
+  const [subscriptionCatalog, setSubscriptionCatalog] = useState<Awaited<ReturnType<typeof paymentService.getSubscriptionPlans>>>([]);
+  const [creditCatalog, setCreditCatalog] = useState<Awaited<ReturnType<typeof paymentService.getCreditPacks>>>([]);
   
   // Redux selectors
   const user = useAppSelector(selectCurrentUser);
   const isSubscribed = useAppSelector(selectIsSubscribed);
   const currentPlan = useAppSelector(selectSubscriptionPlan);
-  const subscriptionStatus = useAppSelector(selectSubscriptionStatus);
   const subscription = useAppSelector(selectSubscription);
 
-  // TODO: Replace with API call
-  const plans: PricingPlan[] = [
-    {
-      id: 'basic',
-      name: 'Basic Subscription',
-      description: 'Single voice narration',
-      price: billingCycle === 'monthly' ? 9.99 : 99.99,
-      credits: 1,
-      icon: 'basic',
-      features: [
-        '1 Basic credit per month',
-        'Single voice narration',
-        'Standard processing speed',
-        'MP3 format downloads',
-        'Email support',
-        'Basic voice options'
-      ]
-    },
-    {
-      id: 'premium',
-      name: 'Premium Subscription',
-      description: 'Multiple character voices',
-      price: billingCycle === 'monthly' ? 19.99 : 199.99,
-      credits: 1,
-      icon: 'premium',
-      isPopular: true,
-      features: [
-        '1 Premium credit per month',
-        'Multiple character voices',
-        'Priority processing',
-        'Multiple format options',
-        'Priority email support',
-        'Advanced voice library',
-        'Theatrical narration'
-      ]
-    }
-  ];
+  useEffect(() => {
+    const loadCatalog = async () => {
+      try {
+        const [plans, creditPacks] = await Promise.all([
+          paymentService.getSubscriptionPlans(),
+          paymentService.getCreditPacks(),
+        ]);
+        setSubscriptionCatalog(plans);
+        setCreditCatalog(creditPacks);
+      } catch (error) {
+        console.error('Failed to load pricing catalog:', error);
+        toast.error('Failed to load pricing', {
+          description: 'Using stale pricing information is disabled until the payment catalog loads.',
+        });
+      }
+    };
 
-  // TODO: Replace with API call - Basic Credits
-  const basicCreditPackages: CreditPackage[] = [
-    { id: 'basic-1', credits: 1, price: 14.95 },
-    { id: 'basic-3', credits: 3, price: 42.99 },
-    { id: 'basic-5', credits: 5, price: 69.99 },
-    { id: 'basic-10', credits: 10, price: 129.99 }
-  ];
+    loadCatalog();
+  }, []);
 
-  // TODO: Replace with API call - Premium Credits
-  const premiumCreditPackages: CreditPackage[] = [
-    { id: 'premium-1', credits: 1, price: 24.95 },
-    { id: 'premium-3', credits: 3, price: 71.99 },
-    { id: 'premium-5', credits: 5, price: 117.99 },
-    { id: 'premium-10', credits: 10, price: 229.99 }
-  ];
+  const plans: PricingPlan[] = subscriptionCatalog.map((plan) => ({
+    id: plan.id,
+    name: `${plan.name} Subscription`,
+    description: plan.description,
+    price: (billingCycle === 'annual' ? plan.annual_amount_cents : plan.monthly_amount_cents) / 100,
+    credits: plan.included_credits,
+    features: plan.features,
+    icon: plan.id,
+    isPopular: plan.id === 'premium',
+  }));
+
+  const basicCreditPackages: CreditPackage[] = creditCatalog
+    .filter(pack => pack.credit_type === 'basic')
+    .map(pack => ({
+      id: pack.id,
+      credits: pack.credits,
+      price: pack.amount_cents / 100,
+      type: pack.credit_type,
+    }));
+
+  const premiumCreditPackages: CreditPackage[] = creditCatalog
+    .filter(pack => pack.credit_type === 'premium')
+    .map(pack => ({
+      id: pack.id,
+      credits: pack.credits,
+      price: pack.amount_cents / 100,
+      type: pack.credit_type,
+    }));
 
   const handleSelectPlan = async (planId: string) => {
     // Check if user is logged in
@@ -149,13 +144,16 @@ export default function Pricing() {
     try {
       const result = await dispatch(purchaseSubscription({
         userId: user.id,
-        plan: planId as 'basic' | 'premium',
+        plan: planId as 'basic' | 'premium' | 'publisher',
         billingCycle: billingCycle,
       })).unwrap();
       
       if (result.already_subscribed) {
         setAlreadySubscribedMessage(result.message);
         setShowAlreadySubscribed(true);
+      } else if (result.checkout_url) {
+        // Redirect to Stripe-hosted checkout
+        window.location.href = result.checkout_url;
       } else {
         toast.success('Successfully subscribed!', {
           description: result.message,
@@ -182,6 +180,8 @@ export default function Pricing() {
         return <Zap className="h-8 w-8" />;
       case 'premium':
         return <Star className="h-8 w-8" />;
+      case 'publisher':
+        return <Building className="h-8 w-8" />;
       default:
         return <Zap className="h-8 w-8" />;
     }
