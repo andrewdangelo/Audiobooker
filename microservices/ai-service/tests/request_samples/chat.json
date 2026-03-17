@@ -1,0 +1,11 @@
+{
+  "prompt_messages": [
+    ["system", "You are a helpful assistant."],
+    ["human", "What is the capital of {country}?"]
+  ],
+  "inputs": {
+	"country": "France"
+  },
+  "provider": "huggingface",
+  "deployment_name": "qwen2-5-7b-instruct-bnb-4bit-001"
+}
