@@ -1,0 +1,91 @@
+[
+    {
+        "book": "Harry Potter and the Prisoner of Azkaban",
+        "characters": [
+            {
+                "name": "Harry Potter",
+                "description": "A young wizard who attends Hogwarts School of Witchcraft and Wizardry.",
+                "gender": "MALE",
+                "age_group": "CHILD"
+            },
+            {
+                "name": "Hermione Granger",
+                "description": "A smart and brave witch who attends Hogwarts School of Witchcraft and Wizardry.",
+                "gender": "FEMALE",
+                "age_group": "CHILD"
+            }
+        ]
+    },
+
+    {
+        "book": "The Great Gatsby",
+        "characters": [
+            {
+                "name": "Jay Gatsby",
+                "description": "A wealthy and enigmatic figure from the 1920s who runs an illegal bootlegging operation and is known for throwing extravagant parties in West Egg, New York.",
+                "gender": "MALE",
+                "age_group": "ADULT"
+            },
+            {
+                "name": "Daisy Buchanan",
+                "description": "A beautiful and mysterious woman from the 1920s who is married to Tom Buchanan but has a romantic relationship with Jay Gatsby.",
+                "gender": "FEMALE",
+                "age_group": "ADULT"
+            }
+        ]
+    },
+
+    {
+        "book": "Pride and Prejudice",
+        "characters": [
+            {
+                "name": "Elizabeth Bennet",
+                "description": "A young adult woman from the fictional Bennet family in Jane Austen's \"Pride and Prejudice,\" known for her wit and strong opinions.",
+                "gender": "FEMALE",
+                "age_group": "YOUNG_ADULT"
+            },
+            {
+                "name": "Mr. Darcy",
+                "description": "A young adult man from the fictional Bennet family in Jane Austen's \"Pride and Prejudice,\" known for his pride and eventual love for Elizabeth Bennet.",
+                "gender": "MALE",
+                "age_group": "YOUNG_ADULT"
+            }
+        ]
+    },
+
+    {
+        "book": "The Fellowship of the Ring",
+        "characters": [
+            {
+                "name": "Frodo Baggins",
+                "description": "A young hobbit who inherits the One Ring and tries to destroy it in Mount Doom.",
+                "gender": "MALE",
+                "age_group": "CHILD/YOUNG_ADULT"
+            },
+            {
+                "name": "Gandalf",
+                "description": "A wizard and a member of the Fellowship of the Ring.",
+                "gender": "MALE",
+                "age_group": "UNKNOWN"
+            }
+        ]
+    },
+
+    {
+        "book": "A Study in Scarlet",
+        "characters": [
+            {
+                "name": "Sherlock Holmes",
+                "description": "A detective who solves crimes in London, England.",
+                "gender": "MALE",
+                "age_group": "ADULT"
+            },
+            {
+                "name": "Dr. John Watson",
+                "description": "A military doctor who becomes Sherlock Holmes's trusted friend and biographer, helping him solve cases.",
+                "gender": "MALE",
+                "age_group": "ADULT"
+            }
+        ]
+    }
+]

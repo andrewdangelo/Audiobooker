@@ -19,12 +19,11 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     DEBUG: bool = True
     TEST_VERSION: str = Field(default="Check ENV Version...", description="Application test version")
-    
-    # Endpoints:
-    API_V1_PREFIX: str = "/api/v1/tts"
+    API_V1_PREFIX: str = Field(...)
     
     # Database
-    DATABASE_URL: str = "postgresql://audiobooker:password@localhost:5432/audiobooker_db"
+    # DATABASE_URL: str = "postgresql://audiobooker:password@localhost:5432/audiobooker_db"
+    MONGODB_URL: str = Field(..., description="MongoDB URL")
     
     # R2 Storage
     R2_ACCOUNT_ID: str = Field(..., description="Cloudflare account ID")
@@ -45,23 +44,31 @@ class Settings(BaseSettings):
     REDIS_DB: int = Field(default=0, description="Redis database number")
     REDIS_PASSWORD: Optional[str] = Field(default=None, description="Redis password")
 
-    ### TTS Provider API KEYS and Settings ###
-    ELEVENLABS_API_KEY: Optional[str] = None
-    OPENAI_API_KEY: Optional[str] = None
+    # Processing Configuration
+    DEFAULT_CHUNK_SIZE: int = Field(default=1000)
+    DEFAULT_CHUNK_OVERLAP: int = Field(default=200)
+    MAX_FILE_SIZE_MB: int = Field(default=100)
+
+    ENABLE_LLM_CHUNKING: bool = Field(default=True, description="Huggingface LLM endpoint URL")
+
+    HF_ENDPOINT_URL: str = Field(..., description="Huggingface LLM endpoint URL")
+    HF_TOKEN: str = Field(..., description="Huggingface Token")
+    HF_WRITE_TOKEN: str = Field(..., description="Huggingface token for writes")
+    HF_NAMESPACE: str = Field(..., description="Huggingface namespace for inference endpoints")
+
+    LLM_SERVERLESS: bool = Field(default=True)
+    LLM_MODEL: str = Field(default="FruitClamp/qwen-finetuned", description="Huggingface LLM Model name")
+    LLM_CONCURRENCY: int = Field(default=10)
+    LLM_MAX_CHARS_PER_WINDOW: int = Field(default=20000)
+    LLM_DISCOVERY_CHARS: int = Field(default=17000)
+    LLM_DELAY_BETWEEN_REQUESTS: float = Field(default=2.0)
+    LLM_ENDPOINT_NAME: str = Field(default="qwen-finetuned-001")
     
-    # TTS Settings
-    TTS_OUTPUT_DIR: str = "audio_output"
-    TTS_MAX_CONCURRENT: int = 5
-    TTS_DEFAULT_PROVIDER: str = "elevenlabs"
-    
-    # ElevenLabs Defaults #TODO Change default settings later
-    ELEVENLABS_DEFAULT_VOICE_ID: Optional[str] = None
-    ELEVENLABS_DEFAULT_MODEL: str = "eleven_monolingual_v1"
-    
-    # OpenAI Defaults #TODO Change default settings later
-    OPENAI_DEFAULT_VOICE: str = "alloy"
-    OPENAI_DEFAULT_MODEL: str = "tts-1"
-    
+    TTS_CONCURRENCY: int = Field(default=1)
+    # Settings-like values
+    # LLM_MAX_TOKENS: int = Field(default=4096)
+    # LLM_TEMPERATURE: int = Field(default=0.2)
+
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         """Validate environment values"""

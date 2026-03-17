@@ -131,7 +131,7 @@ class TTSService:
         
         return str(file_path), duration
     
-    async def process_batch(self, chunks: list[dict], provider_name: str = "elevenlabs", voice_id: Optional[str] = None, model_id: Optional[str] = None, voice_settings: Optional[dict] = None, max_concurrent: int = settings.TTS_MAX_CONCURRENT) -> list[dict]:
+    async def process_batch(self, chunks: list[dict], provider_name: str = "elevenlabs", voice_id: Optional[str] = None, model_id: Optional[str] = None, voice_settings: Optional[dict] = None, max_concurrent: int = settings.TTS_CONCURRENCY) -> list[dict]:
         """
         Process multiple chunks concurrently
         chunks: list of dicts with 'chunk_id' and 'text' keys

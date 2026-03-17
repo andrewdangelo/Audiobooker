@@ -18,7 +18,7 @@ import asyncio
 from app.core.config_settings import settings
 from app.core.redis_manager import redis_manager
 from app.core.logging_config import setup_logging
-from app.routers import (health, tts, audio_stitching)
+from app.routers import (health, tts, audio_stitching, ai_generation)
 from app.services import audio_stitcher
 
 __version__ = settings.TEST_VERSION
@@ -59,6 +59,12 @@ app.include_router(
     tts.router, 
     prefix=f"{settings.API_V1_PREFIX}/tts_processor",
     tags=["-TTS_SERVICE-"]
+)
+
+app.include_router(
+    ai_generation.router, 
+    prefix=f"{settings.API_V1_PREFIX}/ai",
+    tags=["-AI GENERATION-"]
 )
 
 # @asynccontextmanager
