@@ -1,0 +1,91 @@
+[
+    {
+        "book": "Harry Potter and the Prisoner of Azkaban",
+        "characters": [
+            {
+                "name": "Harry Potter",
+                "description": "Openly gay leprechaun who goes to UCLA. Is on the football team.",
+                "gender": "MALE",
+                "age_group": "ANCIENT"
+            },
+            {
+                "name": "Hermione Granger",
+                "description": "Obese fifty year old man who loves fishing.",
+                "gender": "MALE",
+                "age_group": "BABY"
+            }
+        ]
+    },
+
+    {
+        "book": "The Great Gatsby",
+        "characters": [
+            {
+                "name": "Jay Gatsby",
+                "description": "A sentient AI construct living in a neon-soaked 2050 Tokyo who runs an illegal memory-smuggling ring.",
+                "gender": "NON-BINARY",
+                "age_group": "ANCIENT"
+            },
+            {
+                "name": "Daisy Buchanan",
+                "description": "A high-ranking galactic commander who pilot's the 'Green Light' starship to colonize East Egg Planet.",
+                "gender": "FEMALE",
+                "age_group": "ADULT"
+            }
+        ]
+    },
+
+    {
+        "book": "Pride and Prejudice",
+        "characters": [
+            {
+                "name": "Elizabeth Bennet",
+                "description": "A world-class MMA fighter and underground cage match champion who refuses to marry into the UFC.",
+                "gender": "FEMALE",
+                "age_group": "YOUNG_ADULT"
+            },
+            {
+                "name": "Mr. Darcy",
+                "description": "A shy, socially anxious YouTuber who specializes in Minecraft let's-play videos and lives in his mother's basement.",
+                "gender": "MALE",
+                "age_group": "YOUNG_ADULT"
+            }
+        ]
+    },
+
+    {
+        "book": "The Fellowship of the Ring",
+        "characters": [
+            {
+                "name": "Frodo Baggins",
+                "description": "The CEO of a Fortune 500 tech company called 'The Ring' who is trying to prevent a hostile takeover.",
+                "gender": "MALE",
+                "age_group": "ADULT"
+            },
+            {
+                "name": "Gandalf",
+                "description": "An IT consultant who is constantly annoyed by people not turning their routers off and on again.",
+                "gender": "MALE",
+                "age_group": "UNKNOWN"
+            }
+        ]
+    },
+
+    {
+        "book": "A Study in Scarlet",
+        "characters": [
+            {
+                "name": "Sherlock Holmes",
+                "description": "A ghost who can only communicate through a Ouija board and solves crimes by haunting the suspects.",
+                "gender": "MALE",
+                "age_group": "ANCIENT"
+            },
+            {
+                "name": "Dr. John Watson",
+                "description": "A professional exorcist who is terrified of ghosts and tries to banish Holmes in every chapter.",
+                "gender": "MALE",
+                "age_group": "ADULT"
+            }
+        ]
+    }
+]

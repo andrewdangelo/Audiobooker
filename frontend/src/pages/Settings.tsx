@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
@@ -10,14 +11,35 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/useToast';
 import { useAppSelector, useAppDispatch } from '@/store/hooks';
-import { selectCurrentUser, selectAuthToken, updateUser, getUserDisplayName } from '@/store/slices/authSlice';
+import { selectCurrentUser, selectAuthToken, updateUser, getUserDisplayName, fetchUserSubscription } from '@/store/slices/authSlice';
+import { 
+  selectSubscription, 
+  selectIsSubscribed, 
+  selectSubscriptionPlan,
+  resubscribe,
+} from '@/store/slices/subscriptionSlice';
 import { authService } from '@/services/authService';
+import { SubscriptionStatusCard, SubscriptionBadge } from '@/components/subscription/SubscriptionComponents';
+import { CancelSubscriptionModal } from '@/components/subscription/CancelSubscriptionModal';
+import { Crown, Zap, Calendar, CreditCard, AlertCircle } from 'lucide-react';
 
 const Settings = () => {
   const { toast } = useToast();
   const dispatch = useAppDispatch();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const user = useAppSelector(selectCurrentUser);
   const token = useAppSelector(selectAuthToken);
+  const subscription = useAppSelector(selectSubscription);
+  const isSubscribed = useAppSelector(selectIsSubscribed);
+  const currentPlan = useAppSelector(selectSubscriptionPlan);
+  
+  // Get initial tab from URL query param
+  const initialTab = searchParams.get('tab') || 'profile';
+  const [activeTab, setActiveTab] = useState(initialTab);
+  
+  // Cancel subscription modal
+  const [showCancelModal, setShowCancelModal] = useState(false);
   
   // Form state initialized from Redux user data
   const [userData, setUserData] = useState({
@@ -37,6 +59,13 @@ const Settings = () => {
   
   const [isLoading, setIsLoading] = useState(false);
   
+  // Fetch subscription status on mount
+  useEffect(() => {
+    if (token) {
+      dispatch(fetchUserSubscription());
+    }
+  }, [token, dispatch]);
+  
   // Update form when user data changes
   useEffect(() => {
     if (user) {
@@ -50,6 +79,29 @@ const Settings = () => {
       }));
     }
   }, [user]);
+  
+  // Handle resubscribe
+  const handleResubscribe = async () => {
+    if (!user?.id) return;
+    
+    try {
+      await dispatch(resubscribe({
+        userId: user.id,
+        plan: currentPlan as 'basic' | 'premium',
+        billingCycle: subscription.billingCycle || 'monthly',
+      })).unwrap();
+      
+      toast({
+        title: "Welcome back!",
+        description: "Your subscription has been reactivated.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error || "Failed to reactivate subscription.",
+      });
+    }
+  };
 
   // Handler for profile updates
   const handleProfileUpdate = async (e: React.FormEvent) => {
@@ -156,9 +208,10 @@ const Settings = () => {
           </p>
         </div>
 
-      <Tabs defaultValue="profile" className="w-full">
-        <TabsList className="grid w-full grid-cols-4 lg:w-[400px]">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-5 lg:w-[500px]">
           <TabsTrigger value="profile">Profile</TabsTrigger>
+          <TabsTrigger value="subscription">Subscription</TabsTrigger>
           <TabsTrigger value="account">Account</TabsTrigger>
           <TabsTrigger value="appearance">Appearance</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
@@ -228,6 +281,169 @@ const Settings = () => {
                   </Button>
                 </div>
               </form>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Subscription Settings */}
+        <TabsContent value="subscription" className="space-y-4 mt-4">
+          {/* Current Subscription Status */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    {currentPlan === 'premium' ? (
+                      <Crown className="h-5 w-5 text-purple-500" />
+                    ) : currentPlan === 'basic' ? (
+                      <Zap className="h-5 w-5 text-blue-500" />
+                    ) : (
+                      <CreditCard className="h-5 w-5" />
+                    )}
+                    Subscription
+                  </CardTitle>
+                  <CardDescription>
+                    Manage your subscription plan and billing
+                  </CardDescription>
+                </div>
+                {isSubscribed && <SubscriptionBadge />}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {isSubscribed ? (
+                <>
+                  {/* Subscription Details */}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label className="text-sm text-muted-foreground">Current Plan</Label>
+                      <p className="font-medium">
+                        {currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1)} Plan
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-sm text-muted-foreground">Billing Cycle</Label>
+                      <p className="font-medium">
+                        {subscription.billingCycle === 'annual' ? 'Annual' : 'Monthly'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-sm text-muted-foreground">Status</Label>
+                      <p className="font-medium">
+                        {subscription.status === 'pending_cancellation' ? (
+                          <span className="text-amber-600">Cancelling at period end</span>
+                        ) : (
+                          <span className="text-green-600">Active</span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-sm text-muted-foreground">
+                        {subscription.status === 'pending_cancellation' ? 'Access Until' : 'Next Billing Date'}
+                      </Label>
+                      <p className="font-medium flex items-center gap-2">
+                        <Calendar className="h-4 w-4 text-muted-foreground" />
+                        {subscription.currentPeriodEnd 
+                          ? new Date(subscription.currentPeriodEnd).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'long',
+                              day: 'numeric'
+                            })
+                          : 'Not available'
+                        }
+                      </p>
+                    </div>
+                  </div>
+                  
+                  {subscription.discountApplied && (
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                      <p className="text-sm text-green-700">
+                        🎁 <strong>Loyalty Discount Applied:</strong> You're getting 50% off until{' '}
+                        {subscription.discountEndDate 
+                          ? new Date(subscription.discountEndDate).toLocaleDateString()
+                          : 'the discount period ends'
+                        }.
+                      </p>
+                    </div>
+                  )}
+                  
+                  <Separator />
+                  
+                  {/* Actions */}
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    {subscription.status === 'pending_cancellation' ? (
+                      <Button onClick={handleResubscribe} className="flex-1">
+                        Reactivate Subscription
+                      </Button>
+                    ) : (
+                      <>
+                        <Button 
+                          variant="outline" 
+                          onClick={() => navigate('/pricing')}
+                          className="flex-1"
+                        >
+                          Change Plan
+                        </Button>
+                        <Button 
+                          variant="destructive" 
+                          onClick={() => setShowCancelModal(true)}
+                          className="flex-1"
+                        >
+                          Cancel Subscription
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </>
+              ) : (
+                /* No Subscription */
+                <div className="text-center py-6">
+                  <div className="mx-auto w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
+                    <CreditCard className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                  <h3 className="text-lg font-medium mb-2">No Active Subscription</h3>
+                  <p className="text-muted-foreground mb-4">
+                    Subscribe to get monthly credits and unlock premium features.
+                  </p>
+                  <Button onClick={() => navigate('/pricing')}>
+                    View Plans
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+          
+          {/* Subscription Benefits */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Subscription Benefits</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <h4 className="font-medium flex items-center gap-2">
+                    <Zap className="h-4 w-4 text-blue-500" />
+                    Basic Plan ($9.99/mo)
+                  </h4>
+                  <ul className="text-sm text-muted-foreground space-y-1 ml-6">
+                    <li>• 1 Basic credit per month</li>
+                    <li>• Single voice narration</li>
+                    <li>• Standard processing speed</li>
+                    <li>• Email support</li>
+                  </ul>
+                </div>
+                <div className="space-y-2">
+                  <h4 className="font-medium flex items-center gap-2">
+                    <Crown className="h-4 w-4 text-purple-500" />
+                    Premium Plan ($19.99/mo)
+                  </h4>
+                  <ul className="text-sm text-muted-foreground space-y-1 ml-6">
+                    <li>• 1 Premium credit per month</li>
+                    <li>• Multiple character voices</li>
+                    <li>• Priority processing</li>
+                    <li>• Priority support</li>
+                  </ul>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
@@ -411,6 +627,12 @@ const Settings = () => {
         </TabsContent>
       </Tabs>
       </div>
+      
+      {/* Cancel Subscription Modal */}
+      <CancelSubscriptionModal 
+        open={showCancelModal} 
+        onClose={() => setShowCancelModal(false)} 
+      />
     </div>
   );
 };

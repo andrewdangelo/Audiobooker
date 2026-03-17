@@ -14,6 +14,9 @@
 
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
+import { authService } from '@/services/authService'
+import { setUserCredits } from './storeSlice'
+import { setSubscription } from './subscriptionSlice'
 
 // Types - matches API response from auth service
 export interface AuthUser {
@@ -26,6 +29,14 @@ export interface AuthUser {
   auth_provider?: string
   avatarUrl?: string
   credits?: number
+  basic_credits?: number
+  premium_credits?: number
+  // Subscription fields
+  subscription_plan?: 'none' | 'basic' | 'premium'
+  subscription_status?: 'none' | 'active' | 'cancelled' | 'expired' | 'pending_cancellation'
+  subscription_billing_cycle?: 'monthly' | 'annual' | null
+  subscription_end_date?: string | null
+  subscription_discount_applied?: boolean
 }
 
 export interface AuthState {
@@ -93,6 +104,62 @@ export const logoutAsync = createAsyncThunk(
       return true
     } catch (error) {
       return rejectWithValue('Logout failed')
+    }
+  }
+)
+
+// Fetch user credits from backend and sync with Redux
+export const fetchUserCredits = createAsyncThunk(
+  'auth/fetchCredits',
+  async (_, { dispatch, getState, rejectWithValue }) => {
+    try {
+      const state = getState() as RootState
+      const token = state.auth.token
+      
+      if (!token) {
+        return rejectWithValue('No auth token')
+      }
+      
+      const response = await authService.getUserCredits(token)
+      
+      // Update store slice with fetched credits (use total_credits)
+      dispatch(setUserCredits(response.total_credits))
+      
+      return response.total_credits
+    } catch (error) {
+      console.error('Failed to fetch user credits:', error)
+      return rejectWithValue('Failed to fetch credits')
+    }
+  }
+)
+
+// Fetch subscription status and sync with Redux
+export const fetchUserSubscription = createAsyncThunk(
+  'auth/fetchSubscription',
+  async (_, { dispatch, getState, rejectWithValue }) => {
+    try {
+      const state = getState() as RootState
+      const token = state.auth.token
+      
+      if (!token) {
+        return rejectWithValue('No auth token')
+      }
+      
+      const response = await authService.getSubscriptionStatus(token)
+      
+      // Update subscription slice
+      dispatch(setSubscription({
+        plan: response.subscription_plan,
+        status: response.subscription_status,
+        billingCycle: response.subscription_billing_cycle,
+        currentPeriodEnd: response.subscription_end_date,
+        discountApplied: response.subscription_discount_applied,
+      }))
+      
+      return response
+    } catch (error) {
+      console.error('Failed to fetch subscription status:', error)
+      return rejectWithValue('Failed to fetch subscription')
     }
   }
 )

@@ -39,6 +39,22 @@ class AuthProvider(str, Enum):
     GOOGLE = "google"
 
 
+class SubscriptionPlan(str, Enum):
+    """Subscription plan types"""
+    NONE = "none"
+    BASIC = "basic"
+    PREMIUM = "premium"
+
+
+class SubscriptionStatus(str, Enum):
+    """Subscription status types"""
+    NONE = "none"
+    ACTIVE = "active"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    PENDING_CANCELLATION = "pending_cancellation"  # Will cancel at period end
+
+
 class UserDocument(BaseModel):
     """MongoDB User document model"""
     id: Optional[PyObjectId] = Field(default=None, alias="_id")
@@ -52,6 +68,20 @@ class UserDocument(BaseModel):
     is_verified: bool = False
     auth_provider: AuthProvider = AuthProvider.LOCAL
     google_id: Optional[str] = None
+    credits: int = Field(default=3, description="Total credits (deprecated - use basic_credits + premium_credits)")
+    basic_credits: int = Field(default=3, description="Basic credits for single voice narration")
+    premium_credits: int = Field(default=0, description="Premium credits for multiple character voices")
+    # Subscription fields
+    subscription_plan: SubscriptionPlan = Field(default=SubscriptionPlan.NONE, description="Current subscription plan")
+    subscription_status: SubscriptionStatus = Field(default=SubscriptionStatus.NONE, description="Subscription status")
+    subscription_billing_cycle: Optional[str] = Field(default=None, description="monthly or annual")
+    subscription_start_date: Optional[datetime] = Field(default=None, description="When subscription started")
+    subscription_end_date: Optional[datetime] = Field(default=None, description="When subscription ends/renews")
+    subscription_cancelled_at: Optional[datetime] = Field(default=None, description="When cancellation was requested")
+    subscription_discount_applied: bool = Field(default=False, description="Whether retention discount was applied")
+    subscription_discount_end_date: Optional[datetime] = Field(default=None, description="When discount period ends")
+    stripe_customer_id: Optional[str] = Field(default=None, description="Stripe customer ID")
+    stripe_subscription_id: Optional[str] = Field(default=None, description="Stripe subscription ID")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: Optional[datetime] = None
@@ -67,9 +97,13 @@ class UserDocument(BaseModel):
         data = self.model_dump(by_alias=True, exclude_none=True)
         if "_id" in data and data["_id"] is None:
             del data["_id"]
-        # Convert enum to string
+        # Convert enums to string
         if "auth_provider" in data:
             data["auth_provider"] = data["auth_provider"].value if isinstance(data["auth_provider"], AuthProvider) else data["auth_provider"]
+        if "subscription_plan" in data:
+            data["subscription_plan"] = data["subscription_plan"].value if isinstance(data["subscription_plan"], SubscriptionPlan) else data["subscription_plan"]
+        if "subscription_status" in data:
+            data["subscription_status"] = data["subscription_status"].value if isinstance(data["subscription_status"], SubscriptionStatus) else data["subscription_status"]
         return data
 
 

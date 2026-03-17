@@ -59,8 +59,11 @@ import {
   checkout,
 } from '@/store/slices/cartSlice'
 import { selectStoreBooks, selectUserCredits } from '@/store/slices/storeSlice'
+import { selectCurrentUser } from '@/store/slices/authSlice'
 import type { CartItem } from '@/store/slices/cartSlice'
 import type { StoreBook } from '@/store/slices/storeSlice'
+import { StripeProvider, StripeElementsWrapper, StripePaymentForm } from '@/components/payment'
+import { paymentService } from '@/services/paymentService'
 
 // ============================================================================
 // TYPES
@@ -326,22 +329,68 @@ interface PaymentStepProps {
   totalPrice: number
   totalCredits: number
   userCredits: number
+  userId: string | null
   paymentMethod: 'credits' | 'card'
   onPaymentMethodChange: (method: 'credits' | 'card') => void
   onBack: () => void
   onNext: () => void
+  onPaymentSuccess: (paymentIntentId: string) => void
+  cartItems: CartItemWithBook[]
 }
 
 function PaymentStep({
   totalPrice,
   totalCredits,
   userCredits,
+  userId,
   paymentMethod,
   onPaymentMethodChange,
   onBack,
   onNext,
+  onPaymentSuccess,
+  cartItems,
 }: PaymentStepProps) {
   const canUseCredits = userCredits >= totalCredits
+  const [clientSecret, setClientSecret] = useState<string | null>(null)
+  const [isLoadingPaymentIntent, setIsLoadingPaymentIntent] = useState(false)
+  const [paymentError, setPaymentError] = useState<string | null>(null)
+
+  // Create payment intent when card payment is selected
+  useEffect(() => {
+    if (paymentMethod === 'card' && !clientSecret && userId) {
+      const createPaymentIntent = async () => {
+        setIsLoadingPaymentIntent(true)
+        setPaymentError(null)
+        try {
+          const response = await paymentService.createPaymentIntent({
+            user_id: userId,
+            amount: totalPrice,
+            currency: 'usd',
+            metadata: {
+              item_count: String(cartItems.length),
+              book_ids: cartItems.map(item => item.bookId).join(','),
+            },
+          })
+          setClientSecret(response.client_secret)
+        } catch (error) {
+          console.error('Failed to create payment intent:', error)
+          setPaymentError(error instanceof Error ? error.message : 'Failed to initialize payment')
+        } finally {
+          setIsLoadingPaymentIntent(false)
+        }
+      }
+      createPaymentIntent()
+    }
+  }, [paymentMethod, clientSecret, userId, totalPrice, cartItems])
+
+  // Reset client secret when switching payment methods
+  const handlePaymentMethodChange = (method: 'credits' | 'card') => {
+    if (method !== paymentMethod) {
+      setClientSecret(null)
+      setPaymentError(null)
+    }
+    onPaymentMethodChange(method)
+  }
   
   return (
     <div className="space-y-6">
@@ -358,7 +407,7 @@ function PaymentStep({
         <CardContent>
           <RadioGroup
             value={paymentMethod}
-            onValueChange={(value: 'credits' | 'card') => onPaymentMethodChange(value)}
+            onValueChange={(value: 'credits' | 'card') => handlePaymentMethodChange(value)}
             className="space-y-4"
           >
             {/* Credits Option */}
@@ -368,7 +417,7 @@ function PaymentStep({
                 paymentMethod === 'credits' && 'border-primary bg-primary/5',
                 !canUseCredits && 'opacity-50 cursor-not-allowed'
               )}
-              onClick={() => canUseCredits && onPaymentMethodChange('credits')}
+              onClick={() => canUseCredits && handlePaymentMethodChange('credits')}
             >
               <RadioGroupItem value="credits" id="credits" disabled={!canUseCredits} />
               <div className="flex-1">
@@ -402,7 +451,7 @@ function PaymentStep({
                 'flex items-start space-x-4 p-4 border rounded-lg cursor-pointer transition-colors',
                 paymentMethod === 'card' && 'border-primary bg-primary/5'
               )}
-              onClick={() => onPaymentMethodChange('card')}
+              onClick={() => handlePaymentMethodChange('card')}
             >
               <RadioGroupItem value="card" id="card" />
               <div className="flex-1">
@@ -419,18 +468,36 @@ function PaymentStep({
                   </span>
                 </div>
                 
-                {/* Placeholder for card form */}
+                {/* Stripe Payment Form */}
                 {paymentMethod === 'card' && (
-                  <div className="mt-4 p-4 bg-muted/50 rounded-md">
-                    <p className="text-sm text-muted-foreground text-center">
-                      {/* TODO: API INTEGRATION
-                       * Integrate payment provider (Stripe, etc.) here
-                       * - Initialize payment element
-                       * - Handle card input
-                       * - Process payment on checkout
-                       */}
-                      Payment form will be integrated here
-                    </p>
+                  <div className="mt-4">
+                    {isLoadingPaymentIntent ? (
+                      <div className="p-4 bg-muted/50 rounded-md flex items-center justify-center">
+                        <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                        <span className="text-sm text-muted-foreground">Initializing payment...</span>
+                      </div>
+                    ) : paymentError ? (
+                      <div className="p-4 bg-destructive/10 text-destructive rounded-md flex items-center gap-2">
+                        <AlertCircle className="h-5 w-5" />
+                        <span className="text-sm">{paymentError}</span>
+                      </div>
+                    ) : clientSecret ? (
+                      <StripeElementsWrapper clientSecret={clientSecret}>
+                        <StripePaymentForm
+                          amount={totalPrice}
+                          currency="usd"
+                          onSuccess={onPaymentSuccess}
+                          onError={(error) => setPaymentError(error)}
+                          submitLabel={`Pay ${formatPrice(totalPrice)}`}
+                        />
+                      </StripeElementsWrapper>
+                    ) : (
+                      <div className="p-4 bg-muted/50 rounded-md">
+                        <p className="text-sm text-muted-foreground text-center">
+                          Please sign in to complete your purchase
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -439,16 +506,18 @@ function PaymentStep({
         </CardContent>
       </Card>
       
-      {/* Actions */}
+      {/* Actions - Only show for credits payment since card has its own submit */}
       <div className="flex justify-between">
         <Button variant="outline" onClick={onBack}>
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back to Cart
         </Button>
-        <Button onClick={onNext}>
-          Review Order
-          <ArrowRight className="h-4 w-4 ml-2" />
-        </Button>
+        {paymentMethod === 'credits' && (
+          <Button onClick={onNext}>
+            Review Order
+            <ArrowRight className="h-4 w-4 ml-2" />
+          </Button>
+        )}
       </div>
     </div>
   )
@@ -646,6 +715,7 @@ export default function Checkout() {
   // Local state
   const [paymentMethod, setPaymentMethod] = useState<'credits' | 'card'>('card')
   const [purchasedCount, setPurchasedCount] = useState(0)
+  const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null)
   
   // Redux state
   const cartItems = useAppSelector(selectCartItems)
@@ -658,6 +728,7 @@ export default function Checkout() {
   const isCheckingOut = useAppSelector(selectIsCheckingOut)
   const checkoutError = useAppSelector(selectCartError)
   const userCredits = useAppSelector(selectUserCredits)
+  const user = useAppSelector(selectCurrentUser)
   
   // Join cart items with book data
   const itemsWithBooks: CartItemWithBook[] = cartItems
@@ -681,10 +752,6 @@ export default function Checkout() {
   
   /**
    * Handle remove item from cart
-   * 
-   * TODO: API INTEGRATION
-   * After removing, sync cart state with backend:
-   * DELETE /api/v1/cart/items/:bookId
    */
   const handleRemove = (bookId: string) => {
     dispatch(removeFromCart(bookId))
@@ -692,11 +759,6 @@ export default function Checkout() {
   
   /**
    * Handle quantity update
-   * 
-   * TODO: API INTEGRATION
-   * After updating, sync cart state with backend:
-   * PATCH /api/v1/cart/items/:bookId
-   * Body: { quantity }
    */
   const handleUpdateQuantity = (bookId: string, quantity: number) => {
     if (quantity <= 0) {
@@ -727,23 +789,24 @@ export default function Checkout() {
       dispatch(setCheckoutStep(stepOrder[currentIndex - 1]))
     }
   }
+
+  /**
+   * Handle successful Stripe payment
+   * When card payment completes, skip to success step
+   */
+  const handlePaymentSuccess = (intentId: string) => {
+    setPaymentIntentId(intentId)
+    setPurchasedCount(itemCount)
+    // For card payments, we can go directly to success since payment is already processed
+    dispatch(checkout({ paymentMethod: 'card', paymentIntentId: intentId }))
+  }
   
   /**
-   * Handle final checkout
-   * 
-   * TODO: API INTEGRATION
-   * This dispatches the checkout thunk which should:
-   * 1. Validate cart items are still available
-   * 2. Process payment (credits or card)
-   * 3. Add books to user's library
-   * 4. Return order confirmation
-   * 
-   * POST /api/v1/checkout
-   * Body: { items, paymentMethod, paymentDetails? }
+   * Handle final checkout for credits payment
    */
   const handleCheckout = () => {
     setPurchasedCount(itemCount)
-    dispatch(checkout({ paymentMethod }))
+    dispatch(checkout({ paymentMethod, paymentIntentId }))
   }
   
   // Empty cart redirect handled above
@@ -752,58 +815,63 @@ export default function Checkout() {
   }
   
   return (
-    <div className="container mx-auto max-w-4xl px-4 py-8">
-      {/* Page Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Checkout</h1>
-        <p className="text-muted-foreground mt-1">
-          Complete your purchase
-        </p>
+    <StripeProvider>
+      <div className="container mx-auto max-w-4xl px-4 py-8">
+        {/* Page Header */}
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold">Checkout</h1>
+          <p className="text-muted-foreground mt-1">
+            Complete your purchase
+          </p>
+        </div>
+        
+        {/* Step Indicator */}
+        {currentStep !== 'success' && <StepIndicator currentStep={currentStep} />}
+        
+        {/* Step Content */}
+        {currentStep === 'cart' && (
+          <CartStep
+            items={itemsWithBooks}
+            totalPrice={totalPrice}
+            totalCredits={totalCredits}
+            onRemove={handleRemove}
+            onUpdateQuantity={handleUpdateQuantity}
+            onNext={handleNextStep}
+          />
+        )}
+        
+        {currentStep === 'payment' && (
+          <PaymentStep
+            totalPrice={totalPrice}
+            totalCredits={totalCredits}
+            userCredits={userCredits}
+            userId={user?.id || null}
+            paymentMethod={paymentMethod}
+            onPaymentMethodChange={setPaymentMethod}
+            onBack={handlePrevStep}
+            onNext={handleNextStep}
+            onPaymentSuccess={handlePaymentSuccess}
+            cartItems={itemsWithBooks}
+          />
+        )}
+        
+        {currentStep === 'confirm' && (
+          <ConfirmStep
+            items={itemsWithBooks}
+            totalPrice={totalPrice}
+            totalCredits={totalCredits}
+            paymentMethod={paymentMethod}
+            isProcessing={isCheckingOut}
+            error={checkoutError}
+            onBack={handlePrevStep}
+            onConfirm={handleCheckout}
+          />
+        )}
+        
+        {currentStep === 'success' && (
+          <SuccessStep itemCount={purchasedCount} />
+        )}
       </div>
-      
-      {/* Step Indicator */}
-      {currentStep !== 'success' && <StepIndicator currentStep={currentStep} />}
-      
-      {/* Step Content */}
-      {currentStep === 'cart' && (
-        <CartStep
-          items={itemsWithBooks}
-          totalPrice={totalPrice}
-          totalCredits={totalCredits}
-          onRemove={handleRemove}
-          onUpdateQuantity={handleUpdateQuantity}
-          onNext={handleNextStep}
-        />
-      )}
-      
-      {currentStep === 'payment' && (
-        <PaymentStep
-          totalPrice={totalPrice}
-          totalCredits={totalCredits}
-          userCredits={userCredits}
-          paymentMethod={paymentMethod}
-          onPaymentMethodChange={setPaymentMethod}
-          onBack={handlePrevStep}
-          onNext={handleNextStep}
-        />
-      )}
-      
-      {currentStep === 'confirm' && (
-        <ConfirmStep
-          items={itemsWithBooks}
-          totalPrice={totalPrice}
-          totalCredits={totalCredits}
-          paymentMethod={paymentMethod}
-          isProcessing={isCheckingOut}
-          error={checkoutError}
-          onBack={handlePrevStep}
-          onConfirm={handleCheckout}
-        />
-      )}
-      
-      {currentStep === 'success' && (
-        <SuccessStep itemCount={purchasedCount} />
-      )}
-    </div>
+    </StripeProvider>
   )
 }

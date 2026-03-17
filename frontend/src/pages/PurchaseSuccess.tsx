@@ -3,18 +3,26 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CheckCircle, Home, Library, Receipt } from 'lucide-react';
+import { useAppSelector, useAppDispatch } from '@/store/hooks';
+import { selectUserCredits } from '@/store/slices/storeSlice';
+import { fetchUserCredits } from '@/store/slices/authSlice';
 
 export default function PurchaseSuccess() {
   const navigate = useNavigate();
+  const dispatch = useAppDispatch();
   const location = useLocation();
   const purchaseData = location.state;
+  const currentCredits = useAppSelector(selectUserCredits);
 
   useEffect(() => {
     // If no purchase data, redirect to pricing
     if (!purchaseData) {
       navigate('/pricing');
+    } else {
+      // Sync credits from database to ensure accuracy
+      dispatch(fetchUserCredits());
     }
-  }, [purchaseData, navigate]);
+  }, [purchaseData, navigate, dispatch]);
 
   if (!purchaseData) {
     return null;
@@ -53,6 +61,12 @@ export default function PurchaseSuccess() {
                   <span className="font-medium">{purchaseData.item.credits} credits</span>
                 </div>
               )}
+              {purchaseData.item.credits && (
+                <div className="flex justify-between border-t pt-2 mt-2">
+                  <span className="text-muted-foreground font-semibold">Current Balance:</span>
+                  <span className="font-semibold text-primary">{currentCredits} credits</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Date:</span>
                 <span className="font-medium">
@@ -66,7 +80,9 @@ export default function PurchaseSuccess() {
           <div className="space-y-3">
             <h3 className="font-semibold">What's Next?</h3>
             <ul className="space-y-2 text-sm text-muted-foreground">
-              <li>✓ Your credits are now available in your account</li>
+              {purchaseData.item.credits && (
+                <li className="text-primary font-medium">✓ Your account now has {currentCredits} credits available</li>
+              )}
               <li>✓ A receipt has been sent to your email</li>
               <li>✓ You can start converting audiobooks immediately</li>
               {purchaseData.item.type === 'plan' && (

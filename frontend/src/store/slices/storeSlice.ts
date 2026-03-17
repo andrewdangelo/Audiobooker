@@ -562,6 +562,22 @@ const storeSlice = createSlice({
     invalidateStoreCache: (state) => {
       state.lastFetched = null
     },
+
+    /**
+     * Increment user credits by a specific amount
+     * Used after successful credit purchase
+     */
+    incrementUserCredits: (state, action: PayloadAction<number>) => {
+      state.userCredits += action.payload
+    },
+
+    /**
+     * Update user credits to a specific value
+     * Used when fetching user profile data
+     */
+    updateUserCredits: (state, action: PayloadAction<number>) => {
+      state.userCredits = action.payload
+    },
   },
   extraReducers: (builder) => {
     // Fetch store books
@@ -628,6 +644,22 @@ const storeSlice = createSlice({
 // ============================================================================
 // EXPORTS - Actions
 // ============================================================================
+
+/**
+ * Add credits to user account
+ * Called after successful credit purchase
+ */
+export const addUserCredits = (creditsToAdd: number) => (dispatch: any) => {
+  dispatch(storeSlice.actions.incrementUserCredits(creditsToAdd))
+}
+
+/**
+ * Set user credits to a specific value
+ * Called when fetching user profile
+ */
+export const setUserCredits = (credits: number) => (dispatch: any) => {
+  dispatch(storeSlice.actions.updateUserCredits(credits))
+}
 
 export const {
   setStoreSearchQuery,

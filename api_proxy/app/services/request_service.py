@@ -21,6 +21,7 @@ class RequestService:
             "pdf": settings.PDF_SERVICE_URL,
             "tts": settings.TTS_SERVICE_URL,
             "auth": settings.AUTH_SERVICE_URL,
+            "payment": settings.PAYMENT_SERVICE_URL,
             "backend": settings.BACKEND_SERVICE_URL
         }
         return (service_map.get(service_name.lower()))
@@ -39,11 +40,17 @@ class RequestService:
         
         logger.info(f"Forwarding {request.method} {path} -> {target_url}")
         
+        # Forward all headers except host
+        forwarded_headers = {
+            key: value for key, value in request.headers.items()
+            if key.lower() not in ['host', 'content-length']
+        }
+        
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 
                 if request.method == "GET":
-                    response = await client.get(target_url)
+                    response = await client.get(target_url, headers=forwarded_headers)
                 
                 elif request.method == "POST":
                     content_type = request.headers.get("content-type", "")
@@ -60,15 +67,15 @@ class RequestService:
                             else:
                                 data[key] = value
                         
-                        response = await client.post(target_url, files=files if files else None, data=data if data else None)
+                        response = await client.post(target_url, files=files if files else None, data=data if data else None, headers=forwarded_headers)
                     else:
                         # Handle JSON/other content
                         body = await request.body()
-                        response = await client.post(target_url, content=body, headers={"content-type": content_type})
+                        response = await client.post(target_url, content=body, headers=forwarded_headers)
                 
                 elif request.method in ["PUT", "PATCH", "DELETE"]:
                     body = await request.body()
-                    response = await client.request(request.method, target_url, content=body)
+                    response = await client.request(request.method, target_url, content=body, headers=forwarded_headers)
                 
                 else:
                     raise HTTPException(status_code=405, detail="Method not allowed")

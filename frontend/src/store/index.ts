@@ -35,6 +35,7 @@ import uiReducer from './slices/uiSlice'
 import userReducer from './slices/userSlice'
 import storeReducer from './slices/storeSlice'
 import cartReducer from './slices/cartSlice'
+import subscriptionReducer from './slices/subscriptionSlice'
 
 // Combine all reducers
 const rootReducer = combineReducers({
@@ -45,6 +46,7 @@ const rootReducer = combineReducers({
   user: userReducer,
   store: storeReducer,
   cart: cartReducer,
+  subscription: subscriptionReducer,
 })
 
 // Persist configuration - choose which slices to persist
@@ -53,7 +55,7 @@ const persistConfig = {
   version: 1,
   storage,
   // Whitelist: only these slices will be persisted
-  whitelist: ['auth', 'audioPlayer', 'user', 'cart'],
+  whitelist: ['auth', 'audioPlayer', 'user', 'cart', 'subscription'],
   // Blacklist: these slices will NOT be persisted (takes precedence over whitelist)
   // blacklist: ['ui'],
 }
@@ -90,3 +92,4 @@ export * from './slices/uiSlice'
 export * from './slices/userSlice'
 export * from './slices/storeSlice'
 export * from './slices/cartSlice'
+export * from './slices/subscriptionSlice'

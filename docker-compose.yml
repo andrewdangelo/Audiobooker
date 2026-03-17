@@ -34,6 +34,65 @@ services:
     profiles:
       - tools
 
+  # MongoDB for microservices
+  mongodb:
+    image: mongo:7.0
+    container_name: audiobooker-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and queues
+  redis:
+    image: redis:7-alpine
+    container_name: audiobooker-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Payment Microservice
+  payment-service:
+    build:
+      context: ./microservices/payment-service
+      dockerfile: dockerfile
+    container_name: audiobooker-payment-service
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8004
+      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_DB_NAME=audiobooker_payment
+      - AUTH_MONGODB_URL=mongodb://mongodb:27017
+      - AUTH_MONGODB_DB_NAME=audiobooker_auth
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    profiles:
+      - microservices
+
 volumes:
   postgres-data:
+    driver: local
+  mongodb-data:
+    driver: local
+  redis-data:
     driver: local

@@ -19,7 +19,8 @@ import {
   Upload,
   Settings,
   HelpCircle,
-  List
+  List,
+  Coins
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -74,6 +75,12 @@ const secondaryNavItems = [
     label: 'Upload', 
     href: '/upload',
     description: 'Upload new audiobooks'
+  },
+  { 
+    icon: Coins, 
+    label: 'Credits', 
+    href: '/credits',
+    description: 'Manage your credits and purchase history'
   },
   { 
     icon: List, 

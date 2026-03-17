@@ -11,6 +11,7 @@ import AudiobookPreview from './pages/AudiobookPreview'
 import Pricing from './pages/Pricing'
 import Purchase from './pages/Purchase'
 import PurchaseSuccess from './pages/PurchaseSuccess'
+import Credits from './pages/Credits'
 import NotFound from './pages/NotFound'
 import PlayerDemo from './pages/PlayerDemo'
 import PlayerPopout from './pages/PlayerPopout'
@@ -62,6 +63,7 @@ function App() {
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/purchase" element={<Purchase />} />
           <Route path="/purchase/success" element={<PurchaseSuccess />} />
+          <Route path="/credits" element={<Credits />} />
           <Route path="/player-demo" element={<PlayerDemo />} />
           <Route path="*" element={<NotFound />} />
         </Route>

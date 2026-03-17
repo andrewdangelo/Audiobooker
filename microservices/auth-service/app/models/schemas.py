@@ -14,6 +14,22 @@ class AuthProvider(str, Enum):
     GOOGLE = "google"
 
 
+class SubscriptionPlan(str, Enum):
+    """Subscription plan types"""
+    NONE = "none"
+    BASIC = "basic"
+    PREMIUM = "premium"
+
+
+class SubscriptionStatus(str, Enum):
+    """Subscription status types"""
+    NONE = "none"
+    ACTIVE = "active"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    PENDING_CANCELLATION = "pending_cancellation"
+
+
 # Request Models
 class SignupRequest(BaseModel):
     """User signup request"""
@@ -96,6 +112,18 @@ class UserResponse(BaseModel):
     is_active: bool = True
     is_verified: bool = False
     auth_provider: AuthProvider = AuthProvider.LOCAL
+    credits: int = 0  # Total credits (deprecated)
+    basic_credits: int = 0
+    premium_credits: int = 0
+    # Subscription fields
+    subscription_plan: SubscriptionPlan = SubscriptionPlan.NONE
+    subscription_status: SubscriptionStatus = SubscriptionStatus.NONE
+    subscription_billing_cycle: Optional[str] = None
+    subscription_end_date: Optional[datetime] = None
+    subscription_discount_applied: bool = False
+    created_at: Optional[datetime] = None
+    last_login: Optional[datetime] = None
+    premium_credits: int = 0
     created_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
     
@@ -116,6 +144,14 @@ class UserResponse(BaseModel):
             is_active=user_doc.get("is_active", True),
             is_verified=user_doc.get("is_verified", False),
             auth_provider=user_doc.get("auth_provider", AuthProvider.LOCAL),
+            credits=user_doc.get("credits", 0),
+            basic_credits=user_doc.get("basic_credits", 0),
+            premium_credits=user_doc.get("premium_credits", 0),
+            subscription_plan=user_doc.get("subscription_plan", SubscriptionPlan.NONE),
+            subscription_status=user_doc.get("subscription_status", SubscriptionStatus.NONE),
+            subscription_billing_cycle=user_doc.get("subscription_billing_cycle"),
+            subscription_end_date=user_doc.get("subscription_end_date"),
+            subscription_discount_applied=user_doc.get("subscription_discount_applied", False),
             created_at=user_doc.get("created_at"),
             last_login=user_doc.get("last_login")
         )

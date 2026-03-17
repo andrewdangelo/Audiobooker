@@ -228,6 +228,43 @@ class AuthService {
   }
 
   /**
+   * Get user credits
+   */
+  async getUserCredits(token: string): Promise<{ basic_credits: number; premium_credits: number; total_credits: number }> {
+    const response = await api.get<{ basic_credits: number; premium_credits: number; total_credits: number }>(
+      `${this.ACCOUNTS_PREFIX}/credits`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    )
+    return response.data
+  }
+
+  /**
+   * Get user subscription status
+   */
+  async getSubscriptionStatus(token: string): Promise<{
+    subscription_plan: 'none' | 'basic' | 'premium'
+    subscription_status: 'none' | 'active' | 'cancelled' | 'expired' | 'pending_cancellation'
+    subscription_billing_cycle: 'monthly' | 'annual' | null
+    subscription_end_date: string | null
+    subscription_discount_applied: boolean
+    is_subscribed: boolean
+  }> {
+    const response = await api.get(
+      `${this.ACCOUNTS_PREFIX}/subscription`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    )
+    return response.data
+  }
+
+  /**
    * Store auth tokens in localStorage
    */
   storeTokens(accessToken: string, refreshToken: string): void {

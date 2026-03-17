@@ -103,7 +103,7 @@ class PDFProcessorService(Logger):
             
             # LLM Speaker Chunking (if enabled)
             script_output_key = None
-            if settings.ENABLE_LLM_CHUNKING and settings.OPENAI_API_KEY:
+            if settings.ENABLE_LLM_CHUNKING and settings.HF_TOKEN:
                 try:
                     self.logger.info(f"Starting LLM speaker chunking for job {job_id}")
                     await self.update_job(job_id, {
@@ -113,9 +113,15 @@ class PDFProcessorService(Logger):
                     
                     # Initialize LLM chunker
                     llm_chunker = SpeakerChunker(
-                        api_key=settings.OPENAI_API_KEY,
-                        model=settings.LLM_MODEL
+                        api_key=settings.HF_TOKEN,
+                        model=settings.LLM_MODEL,
+                        base_url=settings.HF_ENDPOINT_URL
                     )
+                    
+                    # Warmup endpoint if serverless mode is enabled
+                    """ if settings.LLM_SERVERLESS:
+                        self.logger.info("Warming up serverless endpoint...")
+                        llm_chunker.warmup_endpoint() """
                     
                     # Track progress for job updates
                     llm_progress = {"last_update": None}
@@ -123,20 +129,32 @@ class PDFProcessorService(Logger):
                     def progress_callback(progress_info: dict):
                         """Store progress info for logging"""
                         llm_progress["last_update"] = progress_info
+                        
+                        # Extract progress details
+                        percent = progress_info.get('percent_complete', 0)
+                        batches_done = progress_info.get('batches_completed', 0)
+                        total_batches = progress_info.get('total_batches', 0)
+                        eta = progress_info.get('estimated_remaining_formatted', 'calculating...')
+                        throughput = progress_info.get('units_per_second', 0)
+                        avg_batch = progress_info.get('avg_batch_time', 0)
+                        
+                        # Log detailed progress
                         self.logger.info(
-                            f"LLM Progress: {progress_info.get('windows_completed', 0)}/{progress_info.get('total_windows', 0)} windows, "
-                            f"~{progress_info.get('estimated_remaining_formatted', 'calculating...')} remaining"
+                            f"LLM Progress: {percent}% complete | "
+                            f"Batches: {batches_done}/{total_batches} | "
+                            f"ETA: {eta} | "
+                            f"Throughput: {throughput} units/s"
                         )
+                        
+                        if avg_batch:
+                            self.logger.debug(f"Average batch time: {avg_batch}s")
                     
                     # Process with LLM (using rate-limit-safe defaults)
                     # Run in thread to avoid blocking the event loop
                     script_result = await asyncio.to_thread(
-                        llm_chunker.chunk_by_speaker_from_processed_data,
+                        llm_chunker.chunk_by_speaker,
                         processed_data=result,
-                        discovery_chars=settings.LLM_DISCOVERY_CHARS,
-                        max_chars_per_window=settings.LLM_MAX_CHARS_PER_WINDOW,
                         concurrency=settings.LLM_CONCURRENCY,
-                        delay_between_requests=settings.LLM_DELAY_BETWEEN_REQUESTS,
                         progress_callback=progress_callback
                     )
                     
@@ -144,11 +162,22 @@ class PDFProcessorService(Logger):
                     script_output_key = f"processed_audiobooks/{job_id.replace('.pdf', '')}_script.json"
                     r2_svc.upload_processed_data(key=script_output_key, data=script_result)
                     
-                    self.logger.info(f"LLM speaker chunking completed - Script lines: {len(script_result.get('script', []))}")
+                    # Log detailed completion stats
+                    meta = script_result.get('meta', {})
+                    segments_count = len(script_result.get('segments', []))
+                    self.logger.info(f"✓ LLM speaker chunking completed successfully")
+                    self.logger.info(f"  → Segments created: {segments_count}")
+                    self.logger.info(f"  → Processing time: {meta.get('processing_time', 0):.1f}s")
+                    self.logger.info(f"  → Compression ratio: {meta.get('compression_ratio', 1)}x")
+                    
+                    if meta.get('speaker_distribution'):
+                        top_speakers = sorted(meta['speaker_distribution'].items(), key=lambda x: x[1], reverse=True)[:5]
+                        speakers_str = ", ".join([f"{name} ({count})" for name, count in top_speakers])
+                        self.logger.info(f"  → Top speakers: {speakers_str}")
                     
                     await self.update_job(job_id, {
                         "progress": 90,
-                        "message": "LLM speaker chunking completed"
+                        "message": f"LLM speaker chunking completed ({segments_count} segments)"
                     })
                     
                 except Exception as e:

@@ -2,12 +2,16 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
-import { ArrowLeft, CreditCard, Lock, Check } from 'lucide-react';
+import { ArrowLeft, CreditCard, Lock, Check, Loader2, AlertCircle } from 'lucide-react';
+import { StripeProvider, StripeElementsWrapper, StripePaymentForm } from '@/components/payment';
+import { paymentService } from '@/services/paymentService';
+import { useAppSelector, useAppDispatch } from '@/store/hooks';
+import { selectCurrentUser } from '@/store/slices/authSlice';
+import { addUserCredits } from '@/store/slices/storeSlice';
 
 // TODO: API Integration
 // POST /api/v1/payments/create-intent - Create payment intent
@@ -28,17 +32,19 @@ interface PurchaseItem {
 
 export default function Purchase() {
   const navigate = useNavigate();
+  const dispatch = useAppDispatch();
   const [searchParams] = useSearchParams();
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'card' | 'paypal'>('card');
   const [agreeToTerms, setAgreeToTerms] = useState(false);
-
-  // Form state
-  const [cardNumber, setCardNumber] = useState('');
-  const [cardName, setCardName] = useState('');
-  const [expiryDate, setExpiryDate] = useState('');
-  const [cvv, setCvv] = useState('');
-  const [billingZip, setBillingZip] = useState('');
+  
+  // Stripe state
+  const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [isLoadingPaymentIntent, setIsLoadingPaymentIntent] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  
+  // User from Redux
+  const user = useAppSelector(selectCurrentUser);
 
   // Get purchase item from URL params
   const purchaseType = searchParams.get('type') as 'plan' | 'credits';
@@ -89,7 +95,70 @@ export default function Purchase() {
     }
   }, [purchaseType, itemId, billingCycle]);
 
-  const handleSubmitPayment = async (e: React.FormEvent) => {
+  // Create payment intent when card payment is selected and we have a purchase item
+  useEffect(() => {
+    if (paymentMethod === 'card' && purchaseItem && user?.id && !clientSecret) {
+      const createPaymentIntent = async () => {
+        setIsLoadingPaymentIntent(true);
+        setPaymentError(null);
+        try {
+          // Convert price to cents
+          const amountCents = Math.round(purchaseItem.price * 100);
+          
+          // Determine credit type from item ID
+          const creditType = purchaseItem.id.startsWith('premium') ? 'premium' : 'basic';
+          
+          const response = await paymentService.createPaymentIntent({
+            user_id: user.id,
+            amount: amountCents,
+            currency: 'usd',
+            metadata: {
+              purchase_type: purchaseItem.type,
+              item_id: purchaseItem.id,
+              item_name: purchaseItem.name,
+              credits: String(purchaseItem.credits || 0),
+              credit_type: creditType,
+            },
+          });
+          setClientSecret(response.client_secret);
+        } catch (error) {
+          console.error('Failed to create payment intent:', error);
+          setPaymentError(error instanceof Error ? error.message : 'Failed to initialize payment');
+        } finally {
+          setIsLoadingPaymentIntent(false);
+        }
+      };
+      createPaymentIntent();
+    }
+  }, [paymentMethod, purchaseItem, user?.id, clientSecret]);
+
+  // Reset client secret when switching payment methods
+  const handlePaymentMethodChange = (method: 'card' | 'paypal') => {
+    if (method !== paymentMethod) {
+      setClientSecret(null);
+      setPaymentError(null);
+    }
+    setPaymentMethod(method);
+  };
+
+  // Handle successful Stripe payment
+  const handlePaymentSuccess = (paymentIntentId: string) => {
+    // Update user credits in Redux if this is a credit purchase
+    if (purchaseItem?.type === 'credits' && purchaseItem.credits) {
+      dispatch(addUserCredits(purchaseItem.credits));
+    }
+
+    navigate('/purchase/success', { 
+      state: { 
+        item: purchaseItem,
+        purchaseDate: new Date().toISOString(),
+        paymentIntentId,
+      } 
+    });
+  };
+
+  // Handle PayPal payment (placeholder)
+  const handlePayPalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!agreeToTerms) {
@@ -100,30 +169,14 @@ export default function Purchase() {
     setIsProcessing(true);
 
     try {
-      // TODO: API Integration
-      // 1. Create payment intent
-      // const paymentIntent = await fetch('/api/v1/payments/create-intent', {
-      //   method: 'POST',
-      //   body: JSON.stringify({
-      //     type: purchaseItem?.type,
-      //     itemId: purchaseItem?.id,
-      //     amount: purchaseItem?.price,
-      //     paymentMethod
-      //   })
-      // });
-
-      // 2. Process payment with payment provider (Stripe, PayPal, etc.)
-      
-      // 3. Confirm payment on backend
-      // await fetch('/api/v1/payments/confirm', {
-      //   method: 'POST',
-      //   body: JSON.stringify({ paymentIntentId: paymentIntent.id })
-      // });
-
-      // Mock success - simulate API delay
+      // TODO: Integrate PayPal
       await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Update user credits in Redux if this is a credit purchase
+      if (purchaseItem?.type === 'credits' && purchaseItem.credits) {
+        dispatch(addUserCredits(purchaseItem.credits));
+      }
 
-      // Navigate to success page
       navigate('/purchase/success', { 
         state: { 
           item: purchaseItem,
@@ -155,30 +208,30 @@ export default function Purchase() {
   }
 
   return (
-    <div className="container max-w-5xl mx-auto py-8 px-4">
-      <div className="mb-6">
-        <Button variant="ghost" onClick={() => navigate('/pricing')}>
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          Back to Pricing
-        </Button>
-      </div>
+    <StripeProvider>
+      <div className="container max-w-5xl mx-auto py-8 px-4">
+        <div className="mb-6">
+          <Button variant="ghost" onClick={() => navigate('/pricing')}>
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            Back to Pricing
+          </Button>
+        </div>
 
-      <div className="grid gap-8 lg:grid-cols-3">
-        {/* Payment Form */}
-        <div className="lg:col-span-2 space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Payment Details</CardTitle>
-              <CardDescription>
-                Complete your purchase securely
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSubmitPayment} className="space-y-6">
+        <div className="grid gap-8 lg:grid-cols-3">
+          {/* Payment Form */}
+          <div className="lg:col-span-2 space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Payment Details</CardTitle>
+                <CardDescription>
+                  Complete your purchase securely
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
                 {/* Payment Method Selection */}
                 <div className="space-y-3">
                   <Label>Payment Method</Label>
-                  <RadioGroup value={paymentMethod} onValueChange={(val) => setPaymentMethod(val as 'card' | 'paypal')}>
+                  <RadioGroup value={paymentMethod} onValueChange={(val) => handlePaymentMethodChange(val as 'card' | 'paypal')}>
                     <div className="flex items-center space-x-2 border rounded-lg p-4">
                       <RadioGroupItem value="card" id="card" />
                       <Label htmlFor="card" className="flex-1 cursor-pointer">
@@ -197,120 +250,143 @@ export default function Purchase() {
                   </RadioGroup>
                 </div>
 
+                {/* Stripe Card Payment */}
                 {paymentMethod === 'card' && (
-                  <>
-                    {/* Card Number */}
-                    <div className="space-y-2">
-                      <Label htmlFor="cardNumber">Card Number</Label>
-                      <Input
-                        id="cardNumber"
-                        placeholder="1234 5678 9012 3456"
-                        value={cardNumber}
-                        onChange={(e) => setCardNumber(e.target.value)}
-                        maxLength={19}
-                        required
-                      />
-                    </div>
+                  <div className="space-y-4">
+                    {!user?.id ? (
+                      <div className="p-4 bg-muted/50 rounded-md text-center">
+                        <p className="text-sm text-muted-foreground">
+                          Please sign in to complete your purchase
+                        </p>
+                        <Button 
+                          variant="outline" 
+                          className="mt-2"
+                          onClick={() => navigate('/login?redirect=/purchase')}
+                        >
+                          Sign In
+                        </Button>
+                      </div>
+                    ) : isLoadingPaymentIntent ? (
+                      <div className="p-4 bg-muted/50 rounded-md flex items-center justify-center">
+                        <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                        <span className="text-sm text-muted-foreground">Initializing payment...</span>
+                      </div>
+                    ) : paymentError ? (
+                      <div className="p-4 bg-destructive/10 text-destructive rounded-md flex items-center gap-2">
+                        <AlertCircle className="h-5 w-5" />
+                        <span className="text-sm">{paymentError}</span>
+                      </div>
+                    ) : clientSecret ? (
+                      <>
+                        {/* Terms and Conditions - before payment form */}
+                        <div className="flex items-start space-x-2">
+                          <Checkbox 
+                            id="terms" 
+                            checked={agreeToTerms}
+                            onChange={(e) => setAgreeToTerms(e.target.checked)}
+                          />
+                          <label
+                            htmlFor="terms"
+                            className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                          >
+                            I agree to the{' '}
+                            <a href="/terms" className="text-primary underline" target="_blank">
+                              Terms and Conditions
+                            </a>{' '}
+                            and{' '}
+                            <a href="/privacy" className="text-primary underline" target="_blank">
+                              Privacy Policy
+                            </a>
+                          </label>
+                        </div>
 
-                    {/* Card Holder Name */}
-                    <div className="space-y-2">
-                      <Label htmlFor="cardName">Cardholder Name</Label>
-                      <Input
-                        id="cardName"
-                        placeholder="John Doe"
-                        value={cardName}
-                        onChange={(e) => setCardName(e.target.value)}
-                        required
-                      />
-                    </div>
-
-                    {/* Expiry and CVV */}
-                    <div className="grid gap-4 grid-cols-3">
-                      <div className="space-y-2 col-span-1">
-                        <Label htmlFor="expiry">Expiry</Label>
-                        <Input
-                          id="expiry"
-                          placeholder="MM/YY"
-                          value={expiryDate}
-                          onChange={(e) => setExpiryDate(e.target.value)}
-                          maxLength={5}
-                          required
-                        />
+                        {agreeToTerms ? (
+                          <StripeElementsWrapper clientSecret={clientSecret}>
+                            <StripePaymentForm
+                              amount={Math.round(purchaseItem.price * 100)}
+                              currency="usd"
+                              onSuccess={handlePaymentSuccess}
+                              onError={(error) => setPaymentError(error)}
+                              submitLabel={`Pay $${purchaseItem.price.toFixed(2)}`}
+                            />
+                          </StripeElementsWrapper>
+                        ) : (
+                          <div className="p-4 bg-muted/50 rounded-md text-center">
+                            <p className="text-sm text-muted-foreground">
+                              Please agree to the terms and conditions to continue
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="p-4 bg-muted/50 rounded-md flex items-center justify-center">
+                        <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                        <span className="text-sm text-muted-foreground">Loading...</span>
                       </div>
-                      <div className="space-y-2 col-span-1">
-                        <Label htmlFor="cvv">CVV</Label>
-                        <Input
-                          id="cvv"
-                          placeholder="123"
-                          value={cvv}
-                          onChange={(e) => setCvv(e.target.value)}
-                          maxLength={4}
-                          required
-                        />
-                      </div>
-                      <div className="space-y-2 col-span-1">
-                        <Label htmlFor="zip">ZIP Code</Label>
-                        <Input
-                          id="zip"
-                          placeholder="12345"
-                          value={billingZip}
-                          onChange={(e) => setBillingZip(e.target.value)}
-                          maxLength={10}
-                          required
-                        />
-                      </div>
-                    </div>
-                  </>
+                    )}
+                  </div>
                 )}
 
-                <Separator />
+                {/* PayPal Payment */}
+                {paymentMethod === 'paypal' && (
+                  <form onSubmit={handlePayPalSubmit} className="space-y-4">
+                    <Separator />
+                    
+                    {/* Terms and Conditions */}
+                    <div className="flex items-start space-x-2">
+                      <Checkbox 
+                        id="terms-paypal" 
+                        checked={agreeToTerms}
+                        onChange={(e) => setAgreeToTerms(e.target.checked)}
+                      />
+                      <label
+                        htmlFor="terms-paypal"
+                        className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                      >
+                        I agree to the{' '}
+                        <a href="/terms" className="text-primary underline" target="_blank">
+                          Terms and Conditions
+                        </a>{' '}
+                        and{' '}
+                        <a href="/privacy" className="text-primary underline" target="_blank">
+                          Privacy Policy
+                        </a>
+                      </label>
+                    </div>
 
-                {/* Terms and Conditions */}
-                <div className="flex items-start space-x-2">
-                  <Checkbox 
-                    id="terms" 
-                    checked={agreeToTerms}
-                    onChange={(e) => setAgreeToTerms(e.target.checked)}
-                  />
-                  <label
-                    htmlFor="terms"
-                    className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                  >
-                    I agree to the{' '}
-                    <a href="/terms" className="text-primary underline" target="_blank">
-                      Terms and Conditions
-                    </a>{' '}
-                    and{' '}
-                    <a href="/privacy" className="text-primary underline" target="_blank">
-                      Privacy Policy
-                    </a>
-                  </label>
-                </div>
+                    <Button
+                      type="submit"
+                      className="w-full"
+                      size="lg"
+                      disabled={isProcessing || !agreeToTerms}
+                    >
+                      {isProcessing ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="h-4 w-4 mr-2" />
+                          Pay with PayPal ${purchaseItem.price.toFixed(2)}
+                        </>
+                      )}
+                    </Button>
 
-                <Button
-                  type="submit"
-                  className="w-full"
-                  size="lg"
-                  disabled={isProcessing || !agreeToTerms}
-                >
-                  {isProcessing ? (
-                    <>Processing...</>
-                  ) : (
-                    <>
-                      <Lock className="h-4 w-4 mr-2" />
-                      Complete Purchase ${purchaseItem.price.toFixed(2)}
-                    </>
-                  )}
-                </Button>
+                    <p className="text-xs text-center text-muted-foreground">
+                      <Lock className="h-3 w-3 inline mr-1" />
+                      You will be redirected to PayPal to complete your payment
+                    </p>
+                  </form>
+                )}
 
                 <p className="text-xs text-center text-muted-foreground">
                   <Lock className="h-3 w-3 inline mr-1" />
                   Your payment information is secure and encrypted
                 </p>
-              </form>
-            </CardContent>
-          </Card>
-        </div>
+              </CardContent>
+            </Card>
+          </div>
 
         {/* Order Summary */}
         <div className="lg:col-span-1">
@@ -390,5 +466,6 @@ export default function Purchase() {
         </div>
       </div>
     </div>
+    </StripeProvider>
   );
 }
