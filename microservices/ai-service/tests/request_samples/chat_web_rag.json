@@ -1,0 +1,8 @@
+{
+  "provider": "cf",
+  "preset": "chat-fast",
+  "prompt_messages": [
+    ["user", "What are the latest developments in fusion energy?"]
+  ],
+  "search_query_template": null
+}

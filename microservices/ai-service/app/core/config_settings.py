@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     MATT_CF_ACCOUNT_ID: str
     MATT_CF_AI_TOKEN: str
     
+    TAVILY_API_KEY: str
+
     # Settings-like values
     # LLM_MAX_TOKENS: int = Field(default=4096)
     # LLM_TEMPERATURE: int = Field(default=0.2)
