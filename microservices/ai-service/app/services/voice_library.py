@@ -174,6 +174,20 @@ class VoiceLibraryManager:
         return all_voices[:limit]
     
 
+    async def assign_voice_single(self, quick: bool = True):
+        """
+        Quick assignment is selecting a single voice from a random shortlist of standard ones and using it for the whole book
+        Single assignment does vector search process except just on one voice
+        """
+        
+        # Retrieve shortlist of standard voices
+
+
+
+        # Return single entry dict of the voice being assigner to narrator
+
+        pass
+
     async def assign_voice_multiple(self, characters: List[Dict]) -> str:
         """
         Assign voices to multiple characters

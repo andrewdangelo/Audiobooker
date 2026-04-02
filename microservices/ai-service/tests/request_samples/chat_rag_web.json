@@ -1,6 +1,6 @@
 {
 	"prompt_messages": [
-		["system", "ou are an expert book analyzer. Your main task is to take the provided Character List and use the provided Web Context to correct the characters' info. You shall only return the CORRECTED list itself and NOT any other words or context or explanation."],
+		["system", "You are an expert book analyzer. Your main task is to take the provided Character List and use the provided Web Context to correct the characters' info. You shall only return the CORRECTED list itself and NOT any other words or context or explanation."],
 		["human", "Character List: {chars_list} \nWeb Context: {web_context} \nReturn the corrected characters list in the same exact json format."]
 	],
 	"inputs": {
