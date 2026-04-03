@@ -1,5 +1,16 @@
 [
     {
+        "id": "chat-basic",
+        "provider": "cf",
+        "deployment_name": "@cf/openai/gpt-oss-20b",
+        "model_name": "gpt-oss-20b",
+        "url": "https://developers.cloudflare.com/workers-ai/models/gpt-oss-20b/",
+        "task": "txt",
+        "description": "OpenAI open-weight model optimized for low latency and general-purpose chat; good balance of speed and quality but less capable than larger siblings on complex reasoning tasks.",
+        "context_window_tokens": 128000,
+        "max_output_tokens": 32768
+    },
+    {
         "id": "chat-fast",
         "provider": "cf",
         "deployment_name": "@cf/meta/llama-3.1-8b-instruct-awq",

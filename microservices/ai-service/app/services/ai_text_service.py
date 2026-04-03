@@ -197,14 +197,26 @@ class AITextService:
             f"[{i+1}] {s['title']}\n{s['body']}" for i, s in enumerate(snippets)
         )
 
-        print(f"CONTEXT BLOCK: {context_block}")
+        # print(f"CONTEXT BLOCK: {context_block}")
 
-        system_msg = (
-            "You are a helpful assistant. Use the Provided Web Context"
-            "to answer the user's question. Cite source numbers where relevant.\n\n"
-            f"Provided Web Context:\n{context_block}"
+        context_prefix = (
+            f"Search results:\n{context_block}\n\n"
+            "Use the above to answer the user's question. Cite source numbers where relevant.\n\n"
         )
-        augmented: PromptMessages = [["system", system_msg], *prompt_messages]
+
+        # Inject into existing system message if present, otherwise prepend one
+        if prompt_messages[0][0] == "system":
+            augmented = [
+                ["system", context_prefix + prompt_messages[0][1]],
+                *prompt_messages[1:]
+            ]
+        else:
+            augmented = [
+                ["system", context_prefix],
+                *prompt_messages
+            ]
+
+
         params = _base_params(inputs)
  
         response = await client.chat.completions.create(
@@ -212,6 +224,9 @@ class AITextService:
             messages=_to_openai_messages(augmented),
             **params,
         )
+
+        # print("CHAT COMPLETION RESPONSE\n" + response.model_dump_json(indent=2))
+
         return response.choices[0].message.content, snippets
     
     # ------------------------------------------------------------------
@@ -226,34 +241,29 @@ class AITextService:
         prompt_messages: PromptMessages,
         template: Optional[str],
     ) -> str:
+        # If template provided, use it directly — no model call needed
+        if template:
+            return template.format(
+                conversation="\n".join(f"{m[0]}: {m[1]}" for m in prompt_messages)
+            )
+
         last_user_msg = next(
             (m[1] for m in reversed(prompt_messages) if m[0] == "user"), ""
         )
-
-        if template:
-            conversation_text = "\n".join(f"{m[0]}: {m[1]}" for m in prompt_messages)
-            query_prompt = template.format(conversation=conversation_text)
-        else:
-            query_prompt = (
-                "Convert the following user message into a short web search query "
-                f"(max 10 words, no quotes, no explanation):\n\n{last_user_msg}"
-            )
-
+        query_prompt = (
+            "Convert the following user message into a short web search query "
+            f"(max 10 words, no quotes, no explanation):\n\n{last_user_msg}"
+        )
         response = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": query_prompt}],
             max_tokens=64,
             temperature=0.0,
         )
-        
-        content = (response.choices[0].message.content or "").strip()
-        
-        # Fallback: if model returned nothing, use the user message directly
-        if not content:
-            print(f"RAG Web Search - Query generation returned empty — falling back to raw user message")
-            return last_user_msg
 
-        return content
+        # print("SEARCH QUERY RESPONSE\n" + response.model_dump_json(indent=2))
+
+        return (response.choices[0].message.content or "").strip() or last_user_msg
     
 # ---------------------------------------------------------------------------
 # Module-level helpers
