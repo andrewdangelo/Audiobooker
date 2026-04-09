@@ -53,5 +53,16 @@
         "description": "Google's 300M-parameter embedding model producing 768-dimensional vectors, well-suited for multilingual semantic search, classification, and clustering; small size means fast inference but lower embedding quality than larger models.",
         "context_window_tokens": 2048,
         "max_output_tokens": null
+    },
+    {
+        "id": "speech-to-text",
+        "provider": "cf",
+        "deployment_name": "@cf/openai/whisper",
+        "model_name": "whisper",
+        "url": "https://developers.cloudflare.com/workers-ai/models/whisper/",
+        "task": "stt",
+        "description": "OpenAI Whisper on Cloudflare Workers AI. Transcribes audio to text.",
+        "context_window_tokens": null,
+        "max_output_tokens": null
     }
 ]

@@ -11,9 +11,8 @@ with open(test_cases_path, 'r') as f:
     samples = json.load(f)
 
 async def test_character_assignment(characters):
-    # 1. Setup Lifecycle
-    openai, hf, collection, r2_session, r2_config = get_clients()
-    manager = VoiceLibraryManager(openai, hf, collection, r2_session, r2_config)
+    collection, r2_session, r2_config = get_clients()
+    manager = VoiceLibraryManager(collection, r2_session, r2_config)
 
     print(f"🚀 Starting Multiple Character Assignment Test for {len(characters)} characters...")
 
@@ -24,7 +23,6 @@ async def test_character_assignment(characters):
         print("\n✨ FINAL CASTING RESULTS:")
         print("==========================")
         for char_name, voice_id in assignments.items():
-            # Let's fetch the description from the DB to see if it actually matches the vibe
             voice_doc = await collection.find_one({"_id": voice_id})
             desc = voice_doc.get("description", "No description found") if voice_doc else "N/A"
             
@@ -39,6 +37,5 @@ async def test_character_assignment(characters):
         traceback.print_exc()
 
 if __name__ == "__main__":
-
     for s in samples:
         asyncio.run(test_character_assignment(s["characters"]))

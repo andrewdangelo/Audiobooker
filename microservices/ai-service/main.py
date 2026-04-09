@@ -13,9 +13,13 @@ import asyncio
 from pathlib import Path
 import json
 
+import aioboto3
+from motor.motor_asyncio import AsyncIOMotorClient
+
 from app.core.config_settings import settings
 from app.core.logging_config import setup_logging
-from app.routers import ai_generation
+from app.routers import ai_generation, voice_library
+from app.services.voice_library import VoiceLibraryManager
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -26,17 +30,30 @@ __author__ = "Matt"
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     if settings.ENVIRONMENT == "development":
-#         json_path = BASE_DIR / "app" / "data" / "ai_defaults.json"
-#         with open(json_path, "r") as f:
-#             app.state.seed_data = json.load(f)
-#         logger.info(f"AI Model Defaults loaded")
-#     else:
-#         app.state.seed_data = []
-#         logger.info("Skipping AI Model Defaults")
-#     yield
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- startup ---
+    logger.info("🚀 LIFESPAN STARTUP RUNNING")
+    
+    mongo_client = AsyncIOMotorClient(settings.MONGODB_URL)
+    collection = mongo_client["audiobooker_backend_db"]["voice_library"]
+ 
+    r2_session = aioboto3.Session()
+    r2_config = {
+        "account_id": settings.R2_ACCOUNT_ID,
+        "access_key": settings.R2_ACCESS_KEY_ID,
+        "secret_key": settings.R2_SECRET_ACCESS_KEY,
+        "bucket":     settings.R2_BUCKET_NAME,
+    }
+ 
+    app.state.voice_manager = VoiceLibraryManager(collection, r2_session, r2_config)
+    logger.info("VoiceLibraryManager initialised")
+ 
+    yield
+ 
+    # --- shutdown ---
+    mongo_client.close()
+    logger.info("Mongo connection closed")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -44,8 +61,8 @@ app = FastAPI(
     description="Microservice For AI Tasks",
     version=__version__,
     docs_url="/docs",
-    redoc_url="/redoc"
-    # lifespan=lifespan
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
 # CORS middleware
@@ -63,10 +80,14 @@ app.__version__ = __version__
 app.include_router(
     ai_generation.router, 
     prefix=f"{settings.API_V1_PREFIX}/ai",
-    tags=["-AI Generation-"]
+    tags=["AI Generation"]
 )
 
-
+app.include_router(
+    voice_library.router, 
+    prefix=f"{settings.API_V1_PREFIX}/ai",
+    tags=["Voice Library"]
+)
 
 @app.get("/", include_in_schema=False)
 async def root():
