@@ -48,6 +48,8 @@ export interface UserCredits {
   credits_used: number
   credits_expiring?: number
   expiry_date?: string
+  premium_credits?: number
+  premium_credits_used?: number
 }
 
 export interface UserStats {

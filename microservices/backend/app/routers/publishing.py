@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 import logging
 import uuid
 import math
+from datetime import datetime
 
 from app.database.database import get_db
 from app.database.db_engine import MongoDBService
@@ -147,7 +148,13 @@ async def update_listing(listing_id: str, user_id: str = Query(..., description=
 
 @router.delete("/store/listings/{listing_id}", status_code=204)
 async def delete_listing(listing_id: str, user_id: str = Query(..., description="User ID"), db = Depends(get_db())):
-    """Delete/unlist a store listing"""
+    """Delete/unlist a store listing.
+
+    The corresponding book document is marked as is_store_item=False so it no
+    longer appears in the public store catalog.  Any user_library entries that
+    reference the book are intentionally left untouched — users who already
+    purchased the book retain access to it in their library.
+    """
     if not check_permission("PUBLISH_AUDIOBOOK"):
         raise HTTPException(status_code=403, detail="Permission denied")
     
@@ -159,8 +166,21 @@ async def delete_listing(listing_id: str, user_id: str = Query(..., description=
     
     if not listing:
         raise HTTPException(status_code=404, detail="Listing not found")
-    
+
+    book_id = listing.get("book_id")
+
+    # Remove the store listing record
     listing_service.delete(listing_id)
+
+    # Delist the book from the public store catalog while preserving the
+    # document itself so existing library entries continue to resolve.
+    if book_id:
+        book_service = MongoDBService(db, Collections.BOOKS)
+        book_service.update(book_id, {
+            "is_store_item": False,
+            "updated_at": datetime.utcnow(),
+        })
+        logger.info(f"Book {book_id} delisted from store (listing {listing_id} removed)")
     
     logger.info(f"Listing deleted: {listing_id}")
     return None

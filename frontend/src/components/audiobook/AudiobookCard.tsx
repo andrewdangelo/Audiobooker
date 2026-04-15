@@ -7,8 +7,10 @@
 
 import { Link } from 'react-router-dom'
 import { Card, CardContent } from '../ui/card'
-import { Clock, User } from 'lucide-react'
+import { Clock, User, Crown, Sparkles, Radio } from 'lucide-react'
 import { formatDuration } from '@/data/demoBooks'
+import { Progress } from '../ui/progress'
+import type { AudiobookConversion } from '@/store/slices/audiobooksSlice'
 
 interface AudiobookCardProps {
   id: string
@@ -17,6 +19,10 @@ interface AudiobookCardProps {
   duration: number // in seconds
   coverImage?: string
   genre?: string
+  isPremium?: boolean
+  purchaseType?: 'basic' | 'premium'
+  status?: 'draft' | 'processing' | 'completed' | 'failed'
+  conversion?: AudiobookConversion | null
 }
 
 export default function AudiobookCard({ 
@@ -25,11 +31,20 @@ export default function AudiobookCard({
   author, 
   duration, 
   coverImage,
-  genre 
+  genre,
+  isPremium,
+  purchaseType,
+  status,
+  conversion,
 }: AudiobookCardProps) {
+  const isDraft = Boolean(conversion) && status === 'draft'
+  const isConverting = Boolean(conversion) && status === 'processing'
+
   return (
     <Link to={`/book/${id}`}>
-      <Card className="overflow-hidden hover:shadow-lg transition-all duration-300 hover:scale-[1.02] cursor-pointer group">
+      <Card className={`overflow-hidden hover:shadow-lg transition-all duration-300 hover:scale-[1.02] cursor-pointer group${
+        isPremium ? ' ring-2 ring-amber-400/60 hover:ring-amber-400' : ''
+      }`}>
         {/* Cover Image */}
         <div className="aspect-[3/4] relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/40">
           {coverImage ? (
@@ -64,6 +79,31 @@ export default function AudiobookCard({
               </span>
             </div>
           )}
+
+          {/* Premium Badge */}
+          {isPremium && (
+            <div className="absolute top-2 right-2">
+              <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold bg-amber-500 text-white rounded-full shadow">
+                <Crown className="h-3 w-3" />
+                {purchaseType === 'premium' ? 'Theatrical' : 'Premium'}
+              </span>
+            </div>
+          )}
+
+          {(isDraft || isConverting) && (
+            <div className="absolute inset-x-2 bottom-2 rounded-2xl bg-background/95 p-2 shadow-lg backdrop-blur">
+              <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-medium">
+                <span className="inline-flex items-center gap-1">
+                  {isDraft ? <Sparkles className="h-3 w-3 text-primary" /> : <Radio className="h-3 w-3 text-primary" />}
+                  {isDraft ? 'Needs setup' : 'Converting'}
+                </span>
+                <span className="text-muted-foreground">
+                  {isDraft ? 'Review metadata' : `${conversion?.progress ?? 0}%`}
+                </span>
+              </div>
+              <Progress value={isDraft ? 8 : conversion?.progress ?? 0} className="h-1.5" />
+            </div>
+          )}
         </div>
         
         {/* Card Content */}
@@ -77,10 +117,22 @@ export default function AudiobookCard({
             <span className="truncate">{author}</span>
           </div>
           
-          <div className="flex items-center gap-1 text-sm text-muted-foreground">
-            <Clock className="h-3 w-3" />
-            <span>{formatDuration(duration)}</span>
-          </div>
+          {conversion ? (
+            <div className="space-y-1">
+              <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                <Clock className="h-3 w-3" />
+                <span>{conversion.etaLabel}</span>
+              </div>
+              <p className="text-xs text-muted-foreground line-clamp-2">
+                {conversion.currentStep}
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 text-sm text-muted-foreground">
+              <Clock className="h-3 w-3" />
+              <span>{formatDuration(duration)}</span>
+            </div>
+          )}
         </CardContent>
       </Card>
     </Link>

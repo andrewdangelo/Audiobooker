@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1/tts"
     
     # Database
-    DATABASE_URL: str = "mongodb://mongo:UxhrKZWvZtWaYOXIYrYXdQKUAzkqNwiY@trolley.proxy.rlwy.net:30172"
+    DATABASE_URL: str = Field(
+        default="mongodb://user:password@localhost:27017/audiobooker",
+        description="MongoDB connection URI",
+    )
     
     # R2 Storage
     R2_ACCOUNT_ID: str = Field(..., description="Cloudflare account ID")

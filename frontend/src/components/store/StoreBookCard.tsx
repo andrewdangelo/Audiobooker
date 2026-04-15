@@ -31,7 +31,9 @@ import {
   ShoppingCart,
   CreditCard,
   Play,
-  BookOpen
+  BookOpen,
+  Crown,
+  Gem,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -50,8 +52,12 @@ interface StoreBookCardProps {
   onAddToCart?: (bookId: string) => void
   /** Optional callback when user clicks "Buy with Credits" */
   onBuyWithCredits?: (bookId: string) => void
+  /** Optional callback when user clicks "Buy Premium" */
+  onBuyPremium?: (bookId: string) => void
   /** Whether the user has enough credits to purchase */
   hasEnoughCredits?: boolean
+  /** Whether the user has enough premium credits to purchase premium */
+  hasEnoughPremiumCredits?: boolean
   /** Optional additional class names */
   className?: string
 }
@@ -119,7 +125,9 @@ export default function StoreBookCard({
   book,
   onAddToCart,
   onBuyWithCredits,
+  onBuyPremium,
   hasEnoughCredits = true,
+  hasEnoughPremiumCredits = true,
   className,
 }: StoreBookCardProps) {
   // Track hover state for showing detailed overlay
@@ -143,6 +151,9 @@ export default function StoreBookCard({
     isOnSale,
     series,
     seriesNumber,
+    isPremium,
+    premiumPrice,
+    premiumCredits,
   } = book
 
   /**
@@ -171,6 +182,12 @@ export default function StoreBookCard({
     onBuyWithCredits?.(id)
   }
 
+  const handleBuyPremium = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onBuyPremium?.(id)
+  }
+
   return (
     <Link to={`/store/book/${id}`} className="block h-full">
       <Card
@@ -178,6 +195,7 @@ export default function StoreBookCard({
           "relative overflow-hidden transition-all duration-300 h-full flex flex-col",
           "hover:shadow-xl hover:scale-[1.02]",
           "cursor-pointer group",
+          isPremium && "ring-2 ring-amber-400/60 hover:ring-amber-400",
           className
         )}
         onMouseEnter={() => setIsHovered(true)}
@@ -208,14 +226,21 @@ export default function StoreBookCard({
             </div>
           )}
 
-          {/* Sale Badge - Top Right */}
-          {isOnSale && (
+          {/* Premium Badge - Top Right (takes priority over Sale) */}
+          {isPremium ? (
+            <div className="absolute top-2 right-2 z-10">
+              <Badge className="gap-1 bg-amber-500 hover:bg-amber-500 text-white border-0 shadow-lg">
+                <Crown className="h-3 w-3" />
+                Premium
+              </Badge>
+            </div>
+          ) : isOnSale ? (
             <div className="absolute top-2 right-2 z-10">
               <Badge variant="destructive">
                 SALE
               </Badge>
             </div>
-          )}
+          ) : null}
 
           {/* Hover Overlay - Full Details */}
           <div
@@ -223,7 +248,7 @@ export default function StoreBookCard({
               "absolute inset-0 bg-gradient-to-t from-black/95 via-black/80 to-black/40",
               "flex flex-col justify-end p-4",
               "transition-all duration-300",
-              isHovered ? "opacity-100" : "opacity-0"
+              isHovered ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
             )}
           >
             {/* Description */}
@@ -260,6 +285,7 @@ export default function StoreBookCard({
             <div className="flex gap-2">
               {/* Buy with Credits Button */}
               <Button
+                type="button"
                 size="sm"
                 variant="secondary"
                 className="flex-1 h-8 text-xs"
@@ -272,6 +298,7 @@ export default function StoreBookCard({
 
               {/* Add to Cart Button */}
               <Button
+                type="button"
                 size="sm"
                 className="flex-1 h-8 text-xs"
                 onClick={handleAddToCart}
@@ -281,8 +308,24 @@ export default function StoreBookCard({
               </Button>
             </div>
 
+            {/* Premium Purchase Button */}
+            {isPremium && (
+              <Button
+                type="button"
+                size="sm"
+                className="mt-2 h-8 text-xs w-full bg-amber-500 hover:bg-amber-600 text-white border-0"
+                onClick={handleBuyPremium}
+                disabled={!hasEnoughPremiumCredits}
+              >
+                <Crown className="h-3 w-3 mr-1" />
+                {premiumCredits} Premium Credit{premiumCredits > 1 ? 's' : ''}
+                {premiumPrice ? ` · ${formatPrice(premiumPrice)}` : ''}
+              </Button>
+            )}
+
             {/* Sample Audio Button */}
             <Button
+              type="button"
               size="sm"
               variant="ghost"
               className="mt-2 h-7 text-xs text-white/80 hover:text-white hover:bg-white/10"
@@ -300,7 +343,14 @@ export default function StoreBookCard({
         </div>
 
         {/* Card Footer - Always Visible */}
-        <div className="p-3 space-y-2 h-[140px] flex flex-col">
+        <div className="p-3 space-y-2 flex flex-col" style={{ minHeight: isPremium ? '160px' : '140px' }}>
+          {/* Premium label strip */}
+          {isPremium && (
+            <div className="flex items-center gap-1 text-xs font-semibold text-amber-600 dark:text-amber-400">
+              <Gem className="h-3 w-3" />
+              <span>Theatrical Edition · Multi-Voice Cast</span>
+            </div>
+          )}
           {/* Title */}
           <h3 className="font-semibold text-sm leading-tight line-clamp-2 group-hover:text-primary transition-colors min-h-[2.5rem]">
             {title}

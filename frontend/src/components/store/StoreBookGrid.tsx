@@ -26,16 +26,31 @@
  * - Parent component should dispatch fetchStoreBooks on mount
  */
 
+import { useState } from 'react'
 import StoreBookCard from './StoreBookCard'
 import { useAppSelector, useAppDispatch } from '@/store'
 import { 
   selectFilteredStoreBooks, 
   selectUserCredits,
+  selectUserPremiumCredits,
   purchaseBook,
+  purchasePremiumBook,
   type StoreBook 
 } from '@/store/slices/storeSlice'
-import { Loader2, PackageOpen } from 'lucide-react'
+import { clearCache } from '@/store/slices/audiobooksSlice'
+import { Loader2, PackageOpen, CreditCard, AlertTriangle, Crown } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import AddToCartModal from '@/components/cart/AddToCartModal'
+import CartSidebar from '@/components/cart/CartSidebar'
 
 // ============================================================================
 // TYPES
@@ -141,6 +156,7 @@ export default function StoreBookGrid({
   // Get books from Redux if not provided via props
   const reduxBooks = useAppSelector(selectFilteredStoreBooks)
   const userCredits = useAppSelector(selectUserCredits)
+  const userPremiumCredits = useAppSelector(selectUserPremiumCredits)
   
   // Use prop books if provided, otherwise use Redux filtered books
   let books = propBooks ?? reduxBooks
@@ -150,33 +166,57 @@ export default function StoreBookGrid({
     books = books.slice(0, limit)
   }
 
-  /**
-   * Handle add to cart action
-   * 
-   * TODO: API INTEGRATION
-   * Connect to your cart service:
-   * - dispatch(addToCart(bookId))
-   * - Show toast notification
-   */
+  // Modal state
+  const [confirmBook, setConfirmBook] = useState<StoreBook | null>(null)
+  const [confirmIsPremium, setConfirmIsPremium] = useState(false)
+  const [cartModalBook, setCartModalBook] = useState<StoreBook | null>(null)
+  const [showCartSidebar, setShowCartSidebar] = useState(false)
+  const [isPurchasing, setIsPurchasing] = useState(false)
+
+  /** Open Add to Cart modal for the chosen book */
   const handleAddToCart = (bookId: string) => {
-    console.log('Add to cart:', bookId)
-    // TODO: Implement cart functionality
-    // dispatch(addToCart(bookId))
+    const book = books.find((b) => b.id === bookId)
+    if (book) setCartModalBook(book)
   }
 
-  /**
-   * Handle buy with credits action
-   * 
-   * TODO: API INTEGRATION
-   * Connect to your purchase service:
-   * - dispatch(purchaseBook({ bookId, useCredits: true }))
-   * - Show confirmation modal
-   * - Handle success/error states
-   */
+  /** Open basic-credits confirmation dialog for the chosen book */
   const handleBuyWithCredits = (bookId: string) => {
-    console.log('Buy with credits:', bookId)
-    // Dispatch purchase action
-    dispatch(purchaseBook({ bookId, useCredits: true }))
+    const book = books.find((b) => b.id === bookId)
+    if (book) { setConfirmBook(book); setConfirmIsPremium(false) }
+  }
+
+  /** Open premium-credits confirmation dialog for the chosen book */
+  const handleBuyPremium = (bookId: string) => {
+    const book = books.find((b) => b.id === bookId)
+    if (book) { setConfirmBook(book); setConfirmIsPremium(true) }
+  }
+
+  /** Execute the confirmed credits purchase */
+  const handleConfirmPurchase = async () => {
+    if (!confirmBook) return
+    setIsPurchasing(true)
+    const book = confirmBook
+    try {
+      if (confirmIsPremium) {
+        await dispatch(purchasePremiumBook({ bookId: book.id, paymentMethod: 'premium_credits' })).unwrap()
+      } else {
+        await dispatch(purchaseBook({ bookId: book.id, useCredits: true })).unwrap()
+      }
+      dispatch(clearCache())
+      setConfirmBook(null)
+      console.log('Toast:', {
+        title: 'Purchase successful!',
+        description: `"${book.title}" has been added to your library.`,
+      })
+    } catch (error) {
+      console.log('Toast:', {
+        title: 'Purchase failed',
+        description: error instanceof Error ? error.message : 'Something went wrong. Please try again.',
+      })
+      // Keep dialog open so user can retry or cancel
+    } finally {
+      setIsPurchasing(false)
+    }
   }
 
   // Determine grid column classes based on columns prop
@@ -217,7 +257,9 @@ export default function StoreBookGrid({
               book={book}
               onAddToCart={handleAddToCart}
               onBuyWithCredits={handleBuyWithCredits}
+              onBuyPremium={handleBuyPremium}
               hasEnoughCredits={userCredits >= book.credits}
+              hasEnoughPremiumCredits={userPremiumCredits >= (book.premiumCredits ?? 0)}
             />
           ))}
       </div>
@@ -228,6 +270,130 @@ export default function StoreBookGrid({
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       )}
+
+      {/* ================================================================ */}
+      {/* Credits Purchase Confirmation Dialog                              */}
+      {/* ================================================================ */}
+      <Dialog open={confirmBook !== null} onOpenChange={(open) => { if (!open) setConfirmBook(null) }}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {confirmIsPremium
+                ? <><Crown className="h-5 w-5 text-amber-500" /> Confirm Theatrical Edition Purchase</>
+                : <><CreditCard className="h-5 w-5 text-primary" /> Confirm Purchase with Credits</>}
+            </DialogTitle>
+            <DialogDescription>
+              {confirmIsPremium
+                ? 'This is a premium edition purchase for a Theatrical audiobook. Theatrical editions require premium credits — basic credits cannot be used.'
+                : 'This is a basic credit purchase for a basic edition audiobook. Review your purchase before confirming'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {confirmBook && (() => {
+            const cost   = confirmIsPremium ? (confirmBook.premiumCredits ?? 0) : confirmBook.credits
+            const bal    = confirmIsPremium ? userPremiumCredits : userCredits
+            const label  = confirmIsPremium ? 'Premium Credit' : 'Credit'
+            const icon   = confirmIsPremium
+              ? <Crown className="h-3.5 w-3.5 text-amber-500" />
+              : <CreditCard className="h-3.5 w-3.5 text-primary" />
+            const insufficient = bal < cost
+            return (
+              <div className="py-4 space-y-4">
+                {/* Book preview */}
+                <div className="flex gap-4">
+                  <div className="w-16 h-20 rounded-md overflow-hidden flex-shrink-0 bg-muted">
+                    {confirmBook.coverImage ? (
+                      <img src={confirmBook.coverImage} alt={confirmBook.title} className="w-full h-full object-cover" />
+                    ) : null}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold leading-tight">{confirmBook.title}</p>
+                    <p className="text-sm text-muted-foreground">{confirmBook.author}</p>
+                    {confirmIsPremium && (
+                      <span className="inline-flex items-center gap-1 mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                        <Crown className="h-3 w-3" /> Theatrical Edition
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Cost summary */}
+                <div className="rounded-lg bg-muted/50 p-4 space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Edition</span>
+                    <span className="font-medium">{confirmIsPremium ? 'Theatrical (Premium)' : 'Standard'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Purchase price</span>
+                    <span className="font-medium flex items-center gap-1">
+                      {icon} {cost} {label}{cost !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Your balance</span>
+                    <span className={cn('font-medium', insufficient ? 'text-destructive' : 'text-foreground')}>
+                      {bal} {label}{bal !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <div className="border-t pt-2 flex justify-between font-medium">
+                    <span>Balance after purchase</span>
+                    <span className={cn(bal - cost < 0 ? 'text-destructive' : 'text-primary')}>
+                      {bal - cost} {label}{(bal - cost) !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Insufficient credits warning */}
+                {insufficient && (
+                  <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm">
+                    <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                    <span>
+                      {confirmIsPremium
+                        ? `You need ${cost} premium credits but only have ${bal}. Premium credits are required for theatrical editions.`
+                        : `You don't have enough credits for this purchase.`}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setConfirmBook(null)} disabled={isPurchasing}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmPurchase}
+              disabled={isPurchasing || (confirmBook
+                ? (confirmIsPremium ? userPremiumCredits < (confirmBook.premiumCredits ?? 0) : userCredits < confirmBook.credits)
+                : false)}
+              className={confirmIsPremium ? 'bg-amber-500 hover:bg-amber-600 text-white border-0' : ''}
+            >
+              {isPurchasing ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Purchasing…</>
+              ) : confirmIsPremium ? (
+                <><Crown className="h-4 w-4 mr-2" /> Confirm Theatrical Purchase</>
+              ) : (
+                <><CreditCard className="h-4 w-4 mr-2" /> Confirm Purchase</>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add to Cart Modal */}
+      <AddToCartModal
+        book={cartModalBook}
+        isOpen={cartModalBook !== null}
+        onClose={() => setCartModalBook(null)}
+        onOpenCart={() => { setCartModalBook(null); setShowCartSidebar(true) }}
+      />
+
+      {/* Cart Sidebar */}
+      <CartSidebar
+        isOpen={showCartSidebar}
+        onClose={() => setShowCartSidebar(false)}
+      />
     </section>
   )
 }

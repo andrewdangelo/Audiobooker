@@ -16,6 +16,7 @@ import { Toaster } from '@/components/ui/toaster'
 import { useAppDispatch, useAppSelector } from '@/store/hooks'
 import { fetchUserCredits } from '@/store/slices/authSlice'
 import { selectIsAuthenticated } from '@/store/slices/authSlice'
+import { tickMockConversions } from '@/store/slices/audiobooksSlice'
 
 interface AppLayoutProps {
   children?: React.ReactNode
@@ -30,6 +31,16 @@ export function AppLayout({ children }: AppLayoutProps) {
     if (isAuthenticated) {
       dispatch(fetchUserCredits())
     }
+  }, [isAuthenticated, dispatch])
+
+  useEffect(() => {
+    if (!isAuthenticated) return
+
+    const intervalId = window.setInterval(() => {
+      dispatch(tickMockConversions())
+    }, 6000)
+
+    return () => window.clearInterval(intervalId)
   }, [isAuthenticated, dispatch])
   
   return (

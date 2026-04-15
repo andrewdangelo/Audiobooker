@@ -39,6 +39,8 @@ import {
   Clock,
   TrendingUp,
   Filter,
+  Crown,
+  BookOpen,
 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -63,6 +65,8 @@ import {
   selectNewReleases,
   selectBestSellers,
   selectFilteredStoreBooks,
+  selectPremiumStoreBooks,
+  selectBasicStoreBooks,
   type StoreSortOption,
 } from '@/store'
 import { cn } from '@/lib/utils'
@@ -246,12 +250,12 @@ function ActiveFilters({
   onClearFilter, 
   onClearAll 
 }: { 
-  filters: { genre?: string }
+  filters: { genre?: string; premiumOnly?: boolean }
   searchQuery: string
   onClearFilter: (key: string) => void
   onClearAll: () => void
 }) {
-  const hasFilters = filters.genre || searchQuery
+  const hasFilters = filters.genre || searchQuery || filters.premiumOnly !== undefined
 
   if (!hasFilters) return null
 
@@ -272,6 +276,25 @@ function ActiveFilters({
         <Badge variant="secondary" className="gap-1">
           {filters.genre}
           <button onClick={() => onClearFilter('genre')}>
+            <X className="h-3 w-3" />
+          </button>
+        </Badge>
+      )}
+
+      {filters.premiumOnly === true && (
+        <Badge className="gap-1 bg-amber-500 text-white border-0 hover:bg-amber-500">
+          <Crown className="h-3 w-3" />
+          Premium only
+          <button onClick={() => onClearFilter('premiumOnly')}>
+            <X className="h-3 w-3" />
+          </button>
+        </Badge>
+      )}
+
+      {filters.premiumOnly === false && (
+        <Badge variant="secondary" className="gap-1">
+          Basic only
+          <button onClick={() => onClearFilter('premiumOnly')}>
             <X className="h-3 w-3" />
           </button>
         </Badge>
@@ -335,9 +358,11 @@ export default function Store() {
   const newReleases = useAppSelector(selectNewReleases)
   const bestSellers = useAppSelector(selectBestSellers)
   const allFilteredBooks = useAppSelector(selectFilteredStoreBooks)
+  const premiumBooksCount = useAppSelector(selectPremiumStoreBooks).length
+  const basicBooksCount = useAppSelector(selectBasicStoreBooks).length
 
   // Track if we're showing filtered results (hide featured sections)
-  const isFiltering = searchQuery || filters.genre
+  const isFiltering = searchQuery || filters.genre || filters.premiumOnly !== undefined
 
   /**
    * Fetch store books on component mount
@@ -379,6 +404,8 @@ export default function Store() {
       dispatch(setStoreSearchQuery(''))
     } else if (key === 'genre') {
       dispatch(updateStoreFilter({ key: 'genre', value: undefined }))
+    } else if (key === 'premiumOnly') {
+      dispatch(updateStoreFilter({ key: 'premiumOnly', value: undefined }))
     }
   }
 
@@ -388,6 +415,24 @@ export default function Store() {
   const handleClearAll = () => {
     dispatch(clearStoreFilters())
   }
+
+  /**
+   * Handle tier tab selection: all | basic | premium
+   */
+  const handleTierSelect = (tier: 'all' | 'basic' | 'premium') => {
+    if (tier === 'all') {
+      dispatch(updateStoreFilter({ key: 'premiumOnly', value: undefined }))
+    } else if (tier === 'premium') {
+      dispatch(updateStoreFilter({ key: 'premiumOnly', value: true }))
+    } else {
+      dispatch(updateStoreFilter({ key: 'premiumOnly', value: false }))
+    }
+  }
+
+  const activeTier: 'all' | 'basic' | 'premium' =
+    filters.premiumOnly === true ? 'premium'
+    : filters.premiumOnly === false ? 'basic'
+    : 'all'
 
   return (
     <div className="container mx-auto px-4 py-8 space-y-8">
@@ -404,6 +449,50 @@ export default function Store() {
         
         {/* User Credits Banner */}
         <CreditsBanner credits={userCredits} />
+      </div>
+
+      {/* ================================================================== */}
+      {/* TIER FILTER TABS */}
+      {/* ================================================================== */}
+      <div className="flex items-center gap-2 border-b pb-4">
+        <button
+          onClick={() => handleTierSelect('all')}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors",
+            activeTier === 'all'
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground hover:bg-muted/80"
+          )}
+        >
+          <BookOpen className="h-4 w-4" />
+          All Books
+          <span className="text-xs opacity-70">({premiumBooksCount + basicBooksCount})</span>
+        </button>
+        <button
+          onClick={() => handleTierSelect('basic')}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors",
+            activeTier === 'basic'
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground hover:bg-muted/80"
+          )}
+        >
+          Basic
+          <span className="text-xs opacity-70">({basicBooksCount})</span>
+        </button>
+        <button
+          onClick={() => handleTierSelect('premium')}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors",
+            activeTier === 'premium'
+              ? "bg-amber-500 text-white"
+              : "bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400"
+          )}
+        >
+          <Crown className="h-4 w-4" />
+          Premium
+          <span className="text-xs opacity-70">({premiumBooksCount})</span>
+        </button>
       </div>
 
       {/* ================================================================== */}

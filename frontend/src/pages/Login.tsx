@@ -124,17 +124,14 @@ export default function Login() {
         <div className="space-y-2">
           <Label htmlFor="email">Email address</Label>
           <div className="relative">
-            <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Mail className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               id="email"
               type="email"
               placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className={`pl-10 h-11 w-full rounded-lg border bg-background px-3 py-2 text-sm 
-                ring-offset-background placeholder:text-muted-foreground 
-                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
-                disabled:cursor-not-allowed disabled:opacity-50
+              className={`h-11 rounded-lg pl-10
                 ${errors.email ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
               disabled={isLoading}
               aria-invalid={!!errors.email}
@@ -160,17 +157,14 @@ export default function Login() {
             </Link>
           </div>
           <div className="relative">
-            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Lock className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               id="password"
               type={showPassword ? 'text' : 'password'}
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className={`pl-10 pr-10 h-11 w-full rounded-lg border bg-background px-3 py-2 text-sm 
-                ring-offset-background placeholder:text-muted-foreground 
-                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
-                disabled:cursor-not-allowed disabled:opacity-50
+              className={`h-11 rounded-lg pl-10 pr-10
                 ${errors.password ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
               disabled={isLoading}
               aria-invalid={!!errors.password}

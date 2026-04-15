@@ -446,9 +446,11 @@ class StripePaymentService:
                 metadata = payment.get("metadata", {})
                 purchase_type = metadata.get("purchase_type")
                 
-                # If this is a credits or plan purchase with credits, add credits to user account
-                # Skip if already granted by the /complete-credit-purchase endpoint (idempotency)
-                if purchase_type in ("credits", "plan") and "credits" in metadata and not payment.get("credits_granted"):
+                # If this is a credits or plan purchase with credits, add credits to user account.
+                # Use an atomic find_one_and_update to claim the grant so this webhook handler
+                # and the /complete-credit-purchase endpoint cannot both fire $inc simultaneously
+                # (the previous read→check→write was vulnerable to a race that doubled credits).
+                if purchase_type in ("credits", "plan") and "credits" in metadata:
                     try:
                         credits_to_add = int(metadata.get("credits", 0))
                         credit_type = metadata.get("credit_type", "basic")  # Default to basic
@@ -458,16 +460,30 @@ class StripePaymentService:
                             # Determine which credit field to update based on type
                             credit_field = "premium_credits" if credit_type == "premium" else "basic_credits"
 
-                            # Add credits to user via auth-service API
-                            await service_client.update_user_credits(user_id, {
-                                credit_field: credits_to_add,
-                                "credits": credits_to_add,  # Legacy total field
-                            })
-                            await MongoDB.get_db().payments.update_one(
-                                {"stripe_payment_intent_id": payment_intent_id},
-                                {"$set": {"credits_granted": True, "credits_granted_amount": credits_to_add, "credits_granted_type": credit_type}},
+                            # Atomically claim the grant — filter ensures only one caller wins.
+                            from datetime import datetime as _dt
+                            claimed = await MongoDB.get_db().payments.find_one_and_update(
+                                {
+                                    "stripe_payment_intent_id": payment_intent_id,
+                                    "credits_granted": {"$ne": True},
+                                },
+                                {"$set": {
+                                    "credits_granted": True,
+                                    "credits_granted_amount": credits_to_add,
+                                    "credits_granted_type": credit_type,
+                                    "updated_at": _dt.utcnow(),
+                                }},
                             )
-                            logger.info(f"Added {credits_to_add} {credit_type} credits to user {user_id} from payment {payment_intent_id}")
+
+                            if claimed is None:
+                                logger.info(f"Credits already granted for payment {payment_intent_id}, skipping webhook grant")
+                            else:
+                                # We own the grant — now safely call $inc.
+                                await service_client.update_user_credits(user_id, {
+                                    credit_field: credits_to_add,
+                                    "credits": credits_to_add,  # Legacy total field
+                                })
+                                logger.info(f"Added {credits_to_add} {credit_type} credits to user {user_id} from payment {payment_intent_id}")
                     except Exception as e:
                         logger.error(f"Failed to add credits to user: {str(e)}")
                 

@@ -57,10 +57,12 @@ class UserCreditsModel(BaseModel):
     """User Credits document model"""
     id: str
     user_id: str
-    credits: int = 0
+    credits: int = 0              # Basic credits — used for standard edition purchases
     credits_used: int = 0
     credits_expiring: int = 0
     expiry_date: Optional[datetime] = None
+    premium_credits: int = 0      # Premium credits — used ONLY for theatrical edition purchases
+    premium_credits_used: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -105,6 +107,10 @@ class BookModel(BaseModel):
     price: Optional[float] = None
     credits_required: int = 1
     is_store_item: bool = False
+    # Premium (theatrical) edition fields
+    is_premium: bool = False  # True = theatrical audiobook with per-character voices
+    premium_price: Optional[float] = None  # Premium purchase price in dollars
+    premium_credits: int = 2  # Default 2 premium credits for a theatrical edition
     chapters: Optional[List[ChapterModel]] = []
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -119,6 +125,7 @@ class UserLibraryModel(BaseModel):
     last_played_at: Optional[datetime] = None
     added_at: datetime = Field(default_factory=datetime.utcnow)
     completed: bool = False
+    purchase_type: str = "basic"  # "basic" or "premium" (theatrical edition)
 
 
 class UserActivityModel(BaseModel):

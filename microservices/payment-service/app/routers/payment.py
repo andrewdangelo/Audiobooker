@@ -293,17 +293,17 @@ async def complete_credit_purchase(body: dict):
         raise HTTPException(status_code=400, detail="No user_id on payment record")
 
     credit_field = "premium_credits" if credit_type == "premium" else "basic_credits"
-    updated = await service_client.update_user_credits(user_id, {
-        credit_field: credits_to_add,
-        "credits": credits_to_add,
-    })
 
-    if not updated:
-        raise HTTPException(status_code=502, detail="Failed to update user credits")
-
-    # Mark as granted so the webhook doesn't double-count
-    await MongoDB.get_db().payments.update_one(
-        {"stripe_payment_intent_id": payment_intent_id},
+    # Atomically claim the grant using a filter that only matches when credits have NOT
+    # yet been granted.  This collapses the previous non-atomic read→check→write into a
+    # single round-trip, closing the race window between this endpoint and the Stripe
+    # webhook handler (both of which called $inc after independently observing
+    # credits_granted=False, causing a double-grant).
+    claimed = await MongoDB.get_db().payments.find_one_and_update(
+        {
+            "stripe_payment_intent_id": payment_intent_id,
+            "credits_granted": {"$ne": True},
+        },
         {"$set": {
             "credits_granted": True,
             "credits_granted_amount": credits_to_add,
@@ -312,6 +312,31 @@ async def complete_credit_purchase(body: dict):
             "updated_at": datetime.utcnow(),
         }},
     )
+
+    if claimed is None:
+        # Another caller (webhook or duplicate request) already claimed the grant.
+        updated_payment = await MongoDB.get_db().payments.find_one(
+            {"stripe_payment_intent_id": payment_intent_id}
+        )
+        return {
+            "status": "already_granted",
+            "credits_added": updated_payment.get("credits_granted_amount", 0) if updated_payment else 0,
+            "credit_type": updated_payment.get("credits_granted_type", "basic") if updated_payment else "basic",
+        }
+
+    # We own the grant — now safely call $inc on the user's balance.
+    updated = await service_client.update_user_credits(user_id, {
+        credit_field: credits_to_add,
+        "credits": credits_to_add,
+    })
+
+    if not updated:
+        # Roll back the claim flag so the caller can retry.
+        await MongoDB.get_db().payments.update_one(
+            {"stripe_payment_intent_id": payment_intent_id},
+            {"$set": {"credits_granted": False}},
+        )
+        raise HTTPException(status_code=502, detail="Failed to update user credits")
 
     logger.info(f"Granted {credits_to_add} {credit_type} credits to user {user_id} for payment {payment_intent_id}")
     return {

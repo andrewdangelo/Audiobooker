@@ -174,13 +174,15 @@ async def get_user_credits(user_id: str = Query(..., description="User ID"), db 
     credits = credits_service.find_one({"user_id": user_id})
     
     if not credits:
-        # Return default credits if not found
+        # Return default credits if not found — initialise both pools
         cred_data = {
             "user_id": user_id,
             "credits": 0,
             "credits_used": 0,
             "credits_expiring": 0,
-            "expiry_date": None
+            "expiry_date": None,
+            "premium_credits": 0,
+            "premium_credits_used": 0,
         }
         user_credits = credits_service.create(cred_data)
         
@@ -188,14 +190,18 @@ async def get_user_credits(user_id: str = Query(..., description="User ID"), db 
             credits=0,
             credits_used=0,
             credits_expiring=0,
-            expiry_date=None
+            expiry_date=None,
+            premium_credits=0,
+            premium_credits_used=0,
         )
     
     return UserCreditsResponse(
         credits=credits.get("credits", 0),
         credits_used=credits.get("credits_used", 0),
         credits_expiring=credits.get("credits_expiring", 0),
-        expiry_date=credits.get("expiry_date").isoformat() if credits.get("expiry_date") else None
+        expiry_date=credits.get("expiry_date").isoformat() if credits.get("expiry_date") else None,
+        premium_credits=credits.get("premium_credits", 0),
+        premium_credits_used=credits.get("premium_credits_used", 0),
     )
 
 

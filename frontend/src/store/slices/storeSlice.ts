@@ -24,6 +24,7 @@ import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import { storeService } from '@/services/backendService'
 import { paymentService } from '@/services/paymentService'
+import api from '@/services/api'
 
 // ============================================================================
 // TYPES
@@ -50,6 +51,10 @@ export interface StoreBook {
   credits: number // number of credits needed (typically 1)
   originalPrice?: number // for displaying discounts
   isOnSale?: boolean
+  // Premium (theatrical) edition
+  isPremium: boolean // true = theatrical audiobook with per-character voices
+  premiumPrice?: number // premium purchase price in cents
+  premiumCredits: number // credits needed for premium edition (default 2)
   // Additional metadata
   language: string
   releaseDate: string
@@ -58,6 +63,15 @@ export interface StoreBook {
   seriesNumber?: number
   tags: string[]
   sampleAudioUrl?: string
+  // Chapter list (used on book detail page)
+  chapters: Array<{ id: string; title: string; duration?: number; order?: number }>
+  // Premium cast roster (populated when backend provides character data)
+  characters: Array<{
+    name: string
+    role?: string
+    voiceActor?: string
+    sampleAudioUrl?: string
+  }>
 }
 
 /**
@@ -96,7 +110,8 @@ export interface StoreState {
   totalItems: number
   
   // User's credits (for purchase flow)
-  userCredits: number
+  userCredits: number          // basic credits — used for standard edition purchases
+  userPremiumCredits: number   // premium credits — used exclusively for theatrical edition purchases
 }
 
 export interface StoreFilters {
@@ -106,6 +121,7 @@ export interface StoreFilters {
   language?: string
   narrator?: string
   onSaleOnly?: boolean
+  premiumOnly?: boolean  // true = premium only, false = basic only, undefined = all
 }
 
 export type StoreSortOption = 
@@ -139,10 +155,17 @@ function normalizeStoreBook(book: Record<string, unknown>): StoreBook {
     genre: (book.genre ?? '') as string,
     rating: (book.rating ?? 0) as number,
     reviewCount: (book.review_count ?? book.reviewCount ?? 0) as number,
-    price: (book.price ?? 0) as number,
+    price: Math.round(((book.price as number) ?? 0) * 100),
     credits: (book.credits ?? book.credits_required ?? 1) as number,
-    originalPrice: book.original_price as number | undefined,
+    originalPrice: book.original_price !== undefined && book.original_price !== null
+      ? Math.round((book.original_price as number) * 100)
+      : undefined,
     isOnSale: book.is_on_sale as boolean | undefined,
+    isPremium: (book.is_premium ?? false) as boolean,
+    premiumPrice: book.premium_price !== undefined && book.premium_price !== null
+      ? Math.round((book.premium_price as number) * 100)
+      : undefined,
+    premiumCredits: (book.premium_credits ?? 2) as number,
     language: (book.language ?? 'English') as string,
     releaseDate: (book.release_date ?? book.releaseDate ?? '') as string,
     publisher: (book.publisher ?? '') as string,
@@ -150,6 +173,22 @@ function normalizeStoreBook(book: Record<string, unknown>): StoreBook {
     seriesNumber: book.series_number as number | undefined,
     tags: (book.tags ?? []) as string[],
     sampleAudioUrl: (book.sample_audio_url ?? book.sampleAudioUrl) as string | undefined,
+    chapters: Array.isArray(book.chapters)
+      ? (book.chapters as Record<string, unknown>[]).map((ch, idx) => ({
+          id: String(ch.id ?? ch._id ?? `ch-${idx}`),
+          title: String(ch.title ?? ''),
+          duration: (ch.duration_seconds ?? ch.duration ?? undefined) as number | undefined,
+          order: (ch.order ?? idx) as number,
+        }))
+      : [],
+    characters: Array.isArray(book.characters)
+      ? (book.characters as Record<string, unknown>[]).map(c => ({
+          name: String(c.name ?? ''),
+          role: c.role as string | undefined,
+          voiceActor: (c.voice_actor ?? c.voiceActor) as string | undefined,
+          sampleAudioUrl: (c.sample_audio_url ?? c.sampleAudioUrl) as string | undefined,
+        }))
+      : [],
   }
 }
 
@@ -175,7 +214,8 @@ const initialState: StoreState = {
   currentPage: 1,
   itemsPerPage: 20,
   totalItems: 0,
-  userCredits: 3, // Mock user credits
+  userCredits: 3, // Mock basic credits
+  userPremiumCredits: 2, // Mock premium credits (earned separately, used only for theatrical editions)
 }
 
 // ============================================================================
@@ -287,7 +327,7 @@ export const purchaseBook = createAsyncThunk(
       if (!userId) throw new Error('Not authenticated')
 
       if (useCredits) {
-        // Process via credits through payment service
+        // Step 1: Deduct credits via payment service
         const response = await paymentService.payWithCredits({
           user_id: userId,
           items: [
@@ -302,6 +342,17 @@ export const purchaseBook = createAsyncThunk(
           currency: 'usd',
           metadata: { book_ids: bookId },
         })
+
+        // Step 2: Add book to library via backend service
+        // (payment service may also do this via internal call, but we ensure
+        //  it happens by calling the backend directly from the frontend too)
+        try {
+          await storeService.purchase(userId, bookId, 'credits')
+        } catch (libraryErr) {
+          // Log but don't fail the whole purchase — credits already deducted
+          console.warn('Library addition may have been handled by payment service:', libraryErr)
+        }
+
         return {
           bookId,
           creditsUsed: book.credits,
@@ -322,6 +373,65 @@ export const purchaseBook = createAsyncThunk(
     } catch (error) {
       return rejectWithValue(
         error instanceof Error ? error.message : 'Purchase failed',
+      )
+    }
+  }
+)
+
+/**
+ * Purchase the premium (theatrical) edition of a book.
+ * Supports payment via premium credits or card (Stripe).
+ */
+export const purchasePremiumBook = createAsyncThunk(
+  'store/purchasePremiumBook',
+  async (
+    {
+      bookId,
+      paymentMethod,
+      paymentIntentId,
+    }: { bookId: string; paymentMethod: 'premium_credits' | 'card'; paymentIntentId?: string },
+    { getState, rejectWithValue }
+  ) => {
+    try {
+      const state = getState() as RootState
+      const book = state.store.books[bookId]
+      if (!book) throw new Error('Book not found')
+      if (!book.isPremium) throw new Error('This book does not have a premium edition')
+
+      // Premium editions must be purchased with premium credits — basic credits
+      // are not accepted regardless of balance.
+      if (paymentMethod === 'premium_credits' && state.store.userPremiumCredits < book.premiumCredits) {
+        throw new Error(
+          `Insufficient premium credits. You need ${book.premiumCredits} but have ${state.store.userPremiumCredits}.`
+        )
+      }
+
+      const userId = (state as RootState & { auth?: { user?: { id?: string } } }).auth?.user?.id
+      if (!userId) throw new Error('Not authenticated')
+
+      const { data } = await api.post(
+        '/backend/store/premium-purchase',
+        {
+          book_id: bookId,
+          payment_method: paymentMethod,
+          ...(paymentIntentId ? { payment_intent_id: paymentIntentId } : {}),
+        },
+        { params: { user_id: userId } }
+      )
+
+      return {
+        bookId,
+        creditsUsed: data.credits_used ?? 0,
+        amountCharged: data.amount_charged ?? 0,
+        // For credit-based premium purchases we return how many premium credits remain;
+        // card purchases do not touch the credit balance.
+        remainingPremiumCredits: paymentMethod === 'premium_credits'
+          ? state.store.userPremiumCredits - (data.credits_used ?? 0)
+          : state.store.userPremiumCredits,
+      }
+    } catch (error) {
+      return rejectWithValue(
+        error instanceof Error ? error.message : 'Premium purchase failed',
       )
     }
   }
@@ -412,19 +522,35 @@ const storeSlice = createSlice({
     },
 
     /**
-     * Increment user credits by a specific amount
-     * Used after successful credit purchase
+     * Increment user (basic) credits by a specific amount.
+     * Used after successful basic credit purchase.
      */
     incrementUserCredits: (state, action: PayloadAction<number>) => {
       state.userCredits += action.payload
     },
 
     /**
-     * Update user credits to a specific value
-     * Used when fetching user profile data
+     * Update user (basic) credits to a specific value.
+     * Used when fetching user profile data.
      */
     updateUserCredits: (state, action: PayloadAction<number>) => {
       state.userCredits = action.payload
+    },
+
+    /**
+     * Increment user premium credits by a specific amount.
+     * Premium credits are earned separately and can ONLY be used on theatrical editions.
+     */
+    incrementUserPremiumCredits: (state, action: PayloadAction<number>) => {
+      state.userPremiumCredits += action.payload
+    },
+
+    /**
+     * Update user premium credits to a specific value.
+     * Used when fetching user profile data.
+     */
+    updateUserPremiumCredits: (state, action: PayloadAction<number>) => {
+      state.userPremiumCredits = action.payload
     },
   },
   extraReducers: (builder) => {
@@ -486,6 +612,17 @@ const storeSlice = createSlice({
           state.userCredits -= action.payload.creditsUsed
         }
       })
+
+    // Premium purchase — deducts from the *premium* credit pool, never from basic credits
+    builder
+      .addCase(purchasePremiumBook.fulfilled, (state, action) => {
+        if (action.payload.creditsUsed > 0) {
+          state.userPremiumCredits = Math.max(
+            0,
+            state.userPremiumCredits - action.payload.creditsUsed
+          )
+        }
+      })
   },
 })
 
@@ -494,19 +631,35 @@ const storeSlice = createSlice({
 // ============================================================================
 
 /**
- * Add credits to user account
- * Called after successful credit purchase
+ * Add basic credits to user account.
+ * Called after successful basic credit purchase.
  */
 export const addUserCredits = (creditsToAdd: number) => (dispatch: any) => {
   dispatch(storeSlice.actions.incrementUserCredits(creditsToAdd))
 }
 
 /**
- * Set user credits to a specific value
- * Called when fetching user profile
+ * Set basic credits to a specific value.
+ * Called when fetching user profile.
  */
 export const setUserCredits = (credits: number) => (dispatch: any) => {
   dispatch(storeSlice.actions.updateUserCredits(credits))
+}
+
+/**
+ * Add premium credits to user account.
+ * Premium credits can ONLY be spent on theatrical (premium) edition purchases.
+ */
+export const addUserPremiumCredits = (creditsToAdd: number) => (dispatch: any) => {
+  dispatch(storeSlice.actions.incrementUserPremiumCredits(creditsToAdd))
+}
+
+/**
+ * Set premium credits to a specific value.
+ * Called when fetching user profile.
+ */
+export const setUserPremiumCredits = (credits: number) => (dispatch: any) => {
+  dispatch(storeSlice.actions.updateUserPremiumCredits(credits))
 }
 
 export const {
@@ -518,6 +671,8 @@ export const {
   setStorePage,
   clearStoreError,
   invalidateStoreCache,
+  incrementUserPremiumCredits,
+  updateUserPremiumCredits,
 } = storeSlice.actions
 
 // ============================================================================
@@ -606,6 +761,13 @@ export const selectFilteredStoreBooks = (state: RootState): StoreBook[] => {
     filtered = filtered.filter(book => book.isOnSale)
   }
 
+  // Apply premium/basic filter
+  if (activeFilters.premiumOnly === true) {
+    filtered = filtered.filter(book => book.isPremium)
+  } else if (activeFilters.premiumOnly === false) {
+    filtered = filtered.filter(book => !book.isPremium)
+  }
+
   // Sort results
   filtered.sort((a, b) => {
     let comparison = 0
@@ -676,10 +838,18 @@ export const selectStoreSort = (state: RootState) => ({
 })
 
 /**
- * Select user credits
+/**
+ * Select user's basic credits balance.
  */
 export const selectUserCredits = (state: RootState): number =>
   state.store.userCredits
+
+/**
+ * Select user's premium credits balance.
+ * Premium credits are the only currency accepted for theatrical edition purchases.
+ */
+export const selectUserPremiumCredits = (state: RootState): number =>
+  state.store.userPremiumCredits
 
 /**
  * Select available genres from current store books
@@ -702,5 +872,23 @@ export const selectStorePagination = (state: RootState) => ({
   totalItems: state.store.totalItems,
   totalPages: Math.ceil(state.store.totalItems / state.store.itemsPerPage),
 })
+
+/**
+ * Select only premium (theatrical) store books
+ */
+export const selectPremiumStoreBooks = (state: RootState): StoreBook[] =>
+  state.store.bookIds
+    .map((id: string) => state.store.books[id])
+    .filter(Boolean)
+    .filter(book => book.isPremium)
+
+/**
+ * Select only basic store books
+ */
+export const selectBasicStoreBooks = (state: RootState): StoreBook[] =>
+  state.store.bookIds
+    .map((id: string) => state.store.books[id])
+    .filter(Boolean)
+    .filter(book => !book.isPremium)
 
 export default storeSlice.reducer

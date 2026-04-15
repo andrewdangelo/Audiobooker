@@ -19,7 +19,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
@@ -60,6 +60,7 @@ import {
 } from '@/store/slices/cartSlice'
 import { selectStoreBooks, selectUserCredits } from '@/store/slices/storeSlice'
 import { selectCurrentUser } from '@/store/slices/authSlice'
+import { clearCache } from '@/store/slices/audiobooksSlice'
 import type { CartItem } from '@/store/slices/cartSlice'
 import type { StoreBook } from '@/store/slices/storeSlice'
 import { StripeProvider, StripeElementsWrapper, StripePaymentForm } from '@/components/payment'
@@ -70,6 +71,24 @@ import { paymentService } from '@/services/paymentService'
 // ============================================================================
 
 type CheckoutStepType = 'cart' | 'payment' | 'confirm' | 'success'
+
+/**
+ * Route state passed when navigating to /checkout in direct mode
+ * (single-book card purchase from store detail page, no cart mutation).
+ */
+export interface DirectCheckoutState {
+  mode: 'direct'
+  source: 'store-book-detail'
+  item: {
+    bookId: string
+    title: string
+    author: string
+    coverImage?: string
+    price: number    // cents
+    credits: number
+    quantity: number
+  }
+}
 
 interface CartItemWithBook extends CartItem {
   book: StoreBook
@@ -338,6 +357,9 @@ interface PaymentStepProps {
   onPaymentReady: (paymentId: string) => void
   onPaymentSuccess: (paymentIntentId: string) => void
   cartItems: CartItemWithBook[]
+  /** When true the credits payment option is hidden (direct card-only flow) */
+  hideCreditsOption?: boolean
+  backLabel?: string
 }
 
 function PaymentStep({
@@ -353,6 +375,8 @@ function PaymentStep({
   onPaymentReady,
   onPaymentSuccess,
   cartItems,
+  hideCreditsOption = false,
+  backLabel = 'Back to Cart',
 }: PaymentStepProps) {
   const canUseCredits = userCredits >= totalCredits
   const [clientSecret, setClientSecret] = useState<string | null>(null)
@@ -421,7 +445,8 @@ function PaymentStep({
             onValueChange={(value: 'credits' | 'card') => handlePaymentMethodChange(value)}
             className="space-y-4"
           >
-            {/* Credits Option */}
+            {/* Credits Option — hidden in direct card-only mode */}
+            {!hideCreditsOption && (
             <div
               className={cn(
                 'flex items-start space-x-4 p-4 border rounded-lg cursor-pointer transition-colors',
@@ -455,6 +480,7 @@ function PaymentStep({
                 )}
               </div>
             </div>
+            )}
             
             {/* Card Option */}
             <div
@@ -522,7 +548,7 @@ function PaymentStep({
       <div className="flex justify-between">
         <Button variant="outline" onClick={onBack}>
           <ArrowLeft className="h-4 w-4 mr-2" />
-          Back to Cart
+          {backLabel}
         </Button>
         {paymentMethod === 'credits' && (
           <Button onClick={onNext}>
@@ -722,7 +748,16 @@ function SuccessStep({ itemCount }: SuccessStepProps) {
 
 export default function Checkout() {
   const navigate = useNavigate()
+  const location = useLocation()
   const dispatch = useAppDispatch()
+
+  // ── Direct-mode detection ────────────────────────────────────────────────
+  // Detect when the user arrived from a store book detail page requesting
+  // a single-book card purchase without touching the cart.
+  const locationState = location.state as DirectCheckoutState | null
+  const isDirect = locationState?.mode === 'direct'
+  const directState = isDirect ? locationState : null
+  // ────────────────────────────────────────────────────────────────────────
   
   // Local state
   const [paymentMethod, setPaymentMethod] = useState<'credits' | 'card'>('card')
@@ -749,18 +784,86 @@ export default function Checkout() {
       return book ? { ...item, book } : null
     })
     .filter((item): item is CartItemWithBook => item !== null)
+
+  // ── Effective items: direct mode uses the route-state item; normal mode
+  //    uses the Redux cart ────────────────────────────────────────────────
+  const effectiveItemsWithBooks: CartItemWithBook[] =
+    isDirect && directState
+      ? [
+          {
+            bookId: directState.item.bookId,
+            quantity: directState.item.quantity ?? 1,
+            addedAt: new Date().toISOString(),
+            priceAtAdd: directState.item.price,
+            creditsAtAdd: directState.item.credits,
+            book: {
+              id: directState.item.bookId,
+              title: directState.item.title,
+              author: directState.item.author,
+              coverImage: directState.item.coverImage,
+              price: directState.item.price,
+              credits: directState.item.credits,
+              // Required StoreBook fields — unused in checkout UI
+              description: '',
+              duration: 0,
+              narrator: '',
+              publishedYear: 0,
+              genre: '',
+              rating: 0,
+              reviewCount: 0,
+              language: '',
+              releaseDate: '',
+              publisher: '',
+              tags: [],
+            } as StoreBook,
+          },
+        ]
+      : itemsWithBooks
+
+  const effectiveTotalPrice = isDirect && directState
+    ? directState.item.price * (directState.item.quantity ?? 1)
+    : totalPrice
+  const effectiveTotalCredits = isDirect && directState
+    ? directState.item.credits * (directState.item.quantity ?? 1)
+    : totalCredits
+  const effectiveItemCount = isDirect && directState
+    ? (directState.item.quantity ?? 1)
+    : itemCount
+
+  // Items array for the checkout thunk's itemsOverride (plain CartItem shape)
+  const directCheckoutItems = isDirect && directState
+    ? [{
+        bookId: directState.item.bookId,
+        quantity: directState.item.quantity ?? 1,
+        priceAtAdd: directState.item.price,
+        creditsAtAdd: directState.item.credits,
+      }]
+    : undefined
   
   // Reset checkout when component mounts
   useEffect(() => {
-    dispatch(resetCheckout())
-  }, [dispatch])
+    if (isDirect) {
+      // Direct mode: skip cart step, go straight to payment
+      dispatch(setCheckoutStep('payment'))
+    } else {
+      dispatch(resetCheckout())
+    }
+  }, [dispatch]) // eslint-disable-line react-hooks/exhaustive-deps
   
-  // Redirect to store if cart is empty (except on success)
+  // Redirect to store if cart is empty (except on success or in direct mode)
   useEffect(() => {
-    if (isEmpty && currentStep !== 'success') {
+    if (!isDirect && isEmpty && currentStep !== 'success') {
       navigate('/store')
     }
-  }, [isEmpty, currentStep, navigate])
+  }, [isDirect, isEmpty, currentStep, navigate])
+
+  // Clear the audiobooks ownership cache whenever a checkout succeeds so the
+  // Library view refetches fresh data on next visit.
+  useEffect(() => {
+    if (currentStep === 'success') {
+      dispatch(clearCache())
+    }
+  }, [currentStep, dispatch])
   
   /**
    * Handle remove item from cart
@@ -792,7 +895,9 @@ export default function Checkout() {
   }
   
   /**
-   * Navigate to previous step
+   * Navigate to previous step.
+   * In direct mode, going back from the payment step returns to the
+   * originating store-book page instead of the cart.
    */
   const handlePrevStep = () => {
     const stepOrder: CheckoutStepType[] = ['cart', 'payment', 'confirm', 'success']
@@ -802,26 +907,45 @@ export default function Checkout() {
     }
   }
 
+  /** Back handler for the PaymentStep — returns to book detail in direct mode. */
+  const handlePaymentBack = () => {
+    if (isDirect && directState) {
+      navigate(`/store/book/${directState.item.bookId}`)
+    } else {
+      handlePrevStep()
+    }
+  }
+
   /**
    * Handle successful Stripe payment
    * When card payment completes, skip to success step
    */
   const handlePaymentSuccess = (_intentId: string) => {
-    setPurchasedCount(itemCount)
+    setPurchasedCount(effectiveItemCount)
     // For card payments, we can go directly to success since payment is already processed
-    dispatch(checkout({ paymentMethod: 'card', paymentId }))
+    dispatch(checkout({
+      paymentMethod: 'card',
+      paymentId,
+      itemsOverride: directCheckoutItems,
+      clearCartOnSuccess: !isDirect,
+    }))
   }
   
   /**
    * Handle final checkout for credits payment
    */
   const handleCheckout = () => {
-    setPurchasedCount(itemCount)
-    dispatch(checkout({ paymentMethod, paymentId }))
+    setPurchasedCount(effectiveItemCount)
+    dispatch(checkout({
+      paymentMethod,
+      paymentId,
+      itemsOverride: directCheckoutItems,
+      clearCartOnSuccess: !isDirect,
+    }))
   }
   
   // Empty cart redirect handled above
-  if (isEmpty && currentStep !== 'success') {
+  if (!isDirect && isEmpty && currentStep !== 'success') {
     return null
   }
   
@@ -836,15 +960,15 @@ export default function Checkout() {
           </p>
         </div>
         
-        {/* Step Indicator */}
-        {currentStep !== 'success' && <StepIndicator currentStep={currentStep} />}
+        {/* Step Indicator – hidden in direct mode to avoid misleading cart step */}
+        {currentStep !== 'success' && !isDirect && <StepIndicator currentStep={currentStep} />}
         
         {/* Step Content */}
         {currentStep === 'cart' && (
           <CartStep
-            items={itemsWithBooks}
-            totalPrice={totalPrice}
-            totalCredits={totalCredits}
+            items={effectiveItemsWithBooks}
+            totalPrice={effectiveTotalPrice}
+            totalCredits={effectiveTotalCredits}
             onRemove={handleRemove}
             onUpdateQuantity={handleUpdateQuantity}
             onNext={handleNextStep}
@@ -853,26 +977,28 @@ export default function Checkout() {
         
         {currentStep === 'payment' && (
           <PaymentStep
-            totalPrice={totalPrice}
-            totalCredits={totalCredits}
+            totalPrice={effectiveTotalPrice}
+            totalCredits={effectiveTotalCredits}
             userCredits={userCredits}
             userId={user?.id || null}
             paymentId={paymentId}
             paymentMethod={paymentMethod}
             onPaymentMethodChange={setPaymentMethod}
-            onBack={handlePrevStep}
+            onBack={handlePaymentBack}
             onNext={handleNextStep}
             onPaymentReady={setPaymentId}
             onPaymentSuccess={handlePaymentSuccess}
-            cartItems={itemsWithBooks}
+            cartItems={effectiveItemsWithBooks}
+            hideCreditsOption={isDirect}
+            backLabel={isDirect ? 'Back to Book' : 'Back to Cart'}
           />
         )}
         
         {currentStep === 'confirm' && (
           <ConfirmStep
-            items={itemsWithBooks}
-            totalPrice={totalPrice}
-            totalCredits={totalCredits}
+            items={effectiveItemsWithBooks}
+            totalPrice={effectiveTotalPrice}
+            totalCredits={effectiveTotalCredits}
             paymentMethod={paymentMethod}
             isProcessing={isCheckingOut}
             error={checkoutError}

@@ -6,6 +6,7 @@ import { CheckCircle, Home, Library, Receipt } from 'lucide-react';
 import { useAppSelector, useAppDispatch } from '@/store/hooks';
 import { selectUserCredits } from '@/store/slices/storeSlice';
 import { fetchUserCredits, fetchUserSubscription } from '@/store/slices/authSlice';
+import { clearCache } from '@/store/slices/audiobooksSlice';
 import { paymentService } from '@/services/paymentService';
 import { useState } from 'react';
 
@@ -91,6 +92,9 @@ export default function PurchaseSuccess() {
             },
             purchaseDate: payment.created_at || new Date().toISOString(),
           });
+          // Clear the audiobooks ownership cache so Library shows the
+          // newly purchased title(s) on the very next visit.
+          dispatch(clearCache());
         }
       } catch (error) {
         console.error('Failed to resolve purchase success details:', error);
@@ -183,23 +187,41 @@ export default function PurchaseSuccess() {
               <Home className="h-4 w-4 mr-2" />
               Dashboard
             </Button>
-            <Button variant="outline" onClick={() => navigate('/upload')}>
-              <Library className="h-4 w-4 mr-2" />
-              Upload Book
-            </Button>
+            {purchaseData.item.type === 'books' ? (
+              <Button variant="outline" onClick={() => navigate('/library')}>
+                <Library className="h-4 w-4 mr-2" />
+                My Library
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => navigate('/upload')}>
+                <Library className="h-4 w-4 mr-2" />
+                Upload Book
+              </Button>
+            )}
             <Button variant="outline" onClick={() => window.print()}>
               <Receipt className="h-4 w-4 mr-2" />
               Print Receipt
             </Button>
           </div>
 
-          <Button 
-            className="w-full" 
-            size="lg"
-            onClick={() => navigate('/upload')}
-          >
-            Start Converting Audiobooks
-          </Button>
+          {purchaseData.item.type === 'books' ? (
+            <Button 
+              className="w-full" 
+              size="lg"
+              onClick={() => navigate('/library')}
+            >
+              <Library className="h-4 w-4 mr-2" />
+              Go to Library
+            </Button>
+          ) : (
+            <Button 
+              className="w-full" 
+              size="lg"
+              onClick={() => navigate('/upload')}
+            >
+              Start Converting Audiobooks
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>
