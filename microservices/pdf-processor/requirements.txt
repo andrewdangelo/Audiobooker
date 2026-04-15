@@ -45,3 +45,7 @@ easyocr
 Pillow
 redis
 openai
+pymongo
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+mongomock>=4.1.2

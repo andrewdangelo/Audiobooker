@@ -15,3 +15,5 @@ pydantic
 pydantic-settings
 requests
 asyncpg
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
