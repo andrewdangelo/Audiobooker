@@ -803,7 +803,6 @@ export default function Checkout() {
               coverImage: directState.item.coverImage,
               price: directState.item.price,
               credits: directState.item.credits,
-              // Required StoreBook fields — unused in checkout UI
               description: '',
               duration: 0,
               narrator: '',
@@ -815,7 +814,11 @@ export default function Checkout() {
               releaseDate: '',
               publisher: '',
               tags: [],
-            } as StoreBook,
+              isPremium: false,
+              premiumCredits: 2,
+              chapters: [],
+              characters: [],
+            } satisfies StoreBook,
           },
         ]
       : itemsWithBooks

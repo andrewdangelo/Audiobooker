@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from bson import ObjectId
-from httpx import ASGITransport, AsyncClient
+from starlette.testclient import TestClient
 
 from app.database.mongodb import MongoDB
-from app.models.schemas import BillingCycle, SubscriptionPlan
 from app.core.config_settings import settings
-from main import app
+
+SUB_PURCHASE = "/api/v1/payment/subscription/purchase"
 
 
 def _subscription_db_mock():
@@ -24,8 +24,7 @@ def _subscription_db_mock():
     return db, oid
 
 
-@pytest.mark.asyncio
-async def test_purchase_already_subscribed_same_plan(monkeypatch):
+def test_purchase_already_subscribed_same_plan(monkeypatch, client: TestClient):
     monkeypatch.setattr(settings, "STRIPE_BASIC_MONTHLY_PRICE_ID", "price_test_basic")
 
     async def _user(_uid):
@@ -38,7 +37,6 @@ async def test_purchase_already_subscribed_same_plan(monkeypatch):
         }
 
     mock_db, _ = _subscription_db_mock()
-    transport = ASGITransport(app=app, lifespan="off")
     with (
         patch(
             "app.routers.subscription.service_client.get_user_by_id",
@@ -47,15 +45,14 @@ async def test_purchase_already_subscribed_same_plan(monkeypatch):
         ),
         patch.object(MongoDB, "get_db", return_value=mock_db),
     ):
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            r = await client.post(
-                "/api/v1/subscription/purchase",
-                json={
-                    "user_id": "507f1f77bcf86cd799439011",
-                    "plan": "basic",
-                    "billing_cycle": "monthly",
-                },
-            )
+        r = client.post(
+            SUB_PURCHASE,
+            json={
+                "user_id": "507f1f77bcf86cd799439011",
+                "plan": "basic",
+                "billing_cycle": "monthly",
+            },
+        )
 
     assert r.status_code == 200
     body = r.json()
@@ -64,8 +61,7 @@ async def test_purchase_already_subscribed_same_plan(monkeypatch):
     mock_db.subscriptions.insert_one.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_purchase_creates_checkout_session_with_mocked_stripe(monkeypatch):
+def test_purchase_creates_checkout_session_with_mocked_stripe(monkeypatch, client: TestClient):
     monkeypatch.setattr(settings, "STRIPE_BASIC_MONTHLY_PRICE_ID", "price_test_basic")
 
     async def _user(_uid):
@@ -77,12 +73,11 @@ async def test_purchase_creates_checkout_session_with_mocked_stripe(monkeypatch)
             "subscription_cancelled_at": None,
         }
 
-    mock_db, oid = _subscription_db_mock()
+    mock_db, _ = _subscription_db_mock()
     fake_session = MagicMock()
     fake_session.id = "cs_test_contract"
     fake_session.url = "https://checkout.stripe.test/c/session"
 
-    transport = ASGITransport(app=app, lifespan="off")
     with (
         patch(
             "app.routers.subscription.service_client.get_user_by_id",
@@ -95,15 +90,14 @@ async def test_purchase_creates_checkout_session_with_mocked_stripe(monkeypatch)
             return_value=fake_session,
         ) as create_session,
     ):
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            r = await client.post(
-                "/api/v1/subscription/purchase",
-                json={
-                    "user_id": "507f1f77bcf86cd799439011",
-                    "plan": "basic",
-                    "billing_cycle": "monthly",
-                },
-            )
+        r = client.post(
+            SUB_PURCHASE,
+            json={
+                "user_id": "507f1f77bcf86cd799439011",
+                "plan": "basic",
+                "billing_cycle": "monthly",
+            },
+        )
 
     assert r.status_code == 200
     body = r.json()
@@ -118,8 +112,9 @@ async def test_purchase_creates_checkout_session_with_mocked_stripe(monkeypatch)
     mock_db.subscriptions.update_one.assert_awaited()
 
 
-@pytest.mark.asyncio
-async def test_purchase_retention_discount_uses_mocked_coupon_and_stripe(monkeypatch):
+def test_purchase_retention_discount_uses_mocked_coupon_and_stripe(
+    monkeypatch, client: TestClient
+):
     monkeypatch.setattr(settings, "STRIPE_PREMIUM_MONTHLY_PRICE_ID", "price_test_premium")
 
     async def _user(_uid):
@@ -139,7 +134,6 @@ async def test_purchase_retention_discount_uses_mocked_coupon_and_stripe(monkeyp
     fake_coupon = MagicMock()
     fake_coupon.id = "coupon_test_ret"
 
-    transport = ASGITransport(app=app, lifespan="off")
     with (
         patch(
             "app.routers.subscription.service_client.get_user_by_id",
@@ -156,16 +150,15 @@ async def test_purchase_retention_discount_uses_mocked_coupon_and_stripe(monkeyp
             return_value=fake_session,
         ) as create_session,
     ):
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            r = await client.post(
-                "/api/v1/subscription/purchase",
-                json={
-                    "user_id": "507f1f77bcf86cd799439011",
-                    "plan": "premium",
-                    "billing_cycle": "monthly",
-                    "apply_discount": True,
-                },
-            )
+        r = client.post(
+            SUB_PURCHASE,
+            json={
+                "user_id": "507f1f77bcf86cd799439011",
+                "plan": "premium",
+                "billing_cycle": "monthly",
+                "apply_discount": True,
+            },
+        )
 
     assert r.status_code == 200
     coupon_create.assert_called_once()

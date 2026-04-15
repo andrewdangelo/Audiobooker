@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
+    # When set (e.g. memory:// for pytest), slowapi uses this instead of Redis for rate limits
+    RATE_LIMIT_STORAGE_URI: Optional[str] = None
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
     

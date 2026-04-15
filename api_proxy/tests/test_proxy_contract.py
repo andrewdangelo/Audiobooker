@@ -4,10 +4,9 @@ expected JSON shape when a request is queued (202).
 """
 from unittest.mock import AsyncMock, patch
 
-import pytest
-from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.testclient import TestClient
 
 from app.core.config_settings import settings
 from main import app
@@ -23,8 +22,7 @@ async def _forward_stub(service_name: str, request: Request, path: str) -> Respo
     )
 
 
-@pytest.mark.asyncio
-async def test_backend_get_forwards_with_path_and_query():
+def test_backend_get_forwards_with_path_and_query():
     with (
         patch(
             "app.routers.proxy_router.QueueService.check_service_load",
@@ -47,9 +45,8 @@ async def test_backend_get_forwards_with_path_and_query():
             side_effect=_forward_stub,
         ) as forward_mock,
     ):
-        transport = ASGITransport(app=app, lifespan="off")
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            r = await client.get(
+        with TestClient(app) as client:
+            r = client.get(
                 f"{PREFIX}/backend/store/catalog",
                 params={"page": "2", "limit": "5"},
             )
@@ -61,8 +58,7 @@ async def test_backend_get_forwards_with_path_and_query():
     assert call_kw[0][2] == "store/catalog"
 
 
-@pytest.mark.asyncio
-async def test_auth_post_json_queued_response_shape():
+def test_auth_post_json_queued_response_shape():
     with (
         patch(
             "app.routers.proxy_router.QueueService.check_service_load",
@@ -80,9 +76,8 @@ async def test_auth_post_json_queued_response_shape():
             return_value="queue_auth_abc123",
         ),
     ):
-        transport = ASGITransport(app=app, lifespan="off")
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            r = await client.post(
+        with TestClient(app) as client:
+            r = client.post(
                 f"{PREFIX}/auth/login",
                 json={"email": "a@b.com", "password": "x"},
             )
@@ -91,12 +86,10 @@ async def test_auth_post_json_queued_response_shape():
     assert body["status"] == "queued"
     assert body["queue_id"] == "queue_auth_abc123"
     assert body["queue_position"] == 5
-    assert "check_status_url" in body
     assert body["check_status_url"] == "/queue/queue_auth_abc123"
 
 
-@pytest.mark.asyncio
-async def test_payment_post_forwards_when_capacity_available():
+def test_payment_post_forwards_when_capacity_available():
     with (
         patch(
             "app.routers.proxy_router.QueueService.check_service_load",
@@ -119,9 +112,8 @@ async def test_payment_post_forwards_when_capacity_available():
             side_effect=_forward_stub,
         ) as forward_mock,
     ):
-        transport = ASGITransport(app=app, lifespan="off")
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            r = await client.post(
+        with TestClient(app) as client:
+            r = client.post(
                 f"{PREFIX}/payment/subscription/purchase",
                 json={"user_id": "u1", "plan": "basic", "billing_cycle": "monthly"},
             )

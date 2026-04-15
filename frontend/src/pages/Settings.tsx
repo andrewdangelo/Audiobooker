@@ -19,9 +19,9 @@ import {
   resubscribe,
 } from '@/store/slices/subscriptionSlice';
 import { authService } from '@/services/authService';
-import { SubscriptionStatusCard, SubscriptionBadge } from '@/components/subscription/SubscriptionComponents';
+import { SubscriptionBadge } from '@/components/subscription/SubscriptionComponents';
 import { CancelSubscriptionModal } from '@/components/subscription/CancelSubscriptionModal';
-import { Crown, Zap, Calendar, CreditCard, AlertCircle } from 'lucide-react';
+import { Crown, Zap, Calendar, CreditCard } from 'lucide-react';
 
 const Settings = () => {
   const { toast } = useToast();

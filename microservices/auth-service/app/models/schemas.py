@@ -193,3 +193,16 @@ class HealthCheckResponse(BaseModel):
     status: str
     version: str
     service: str
+
+
+class ConsumeConversionCreditRequest(BaseModel):
+    """Spend one basic or premium credit for an upload/conversion (server-enforced)."""
+
+    credit_type: str = Field(..., description="basic or premium")
+
+    @field_validator("credit_type")
+    @classmethod
+    def validate_credit_type(cls, v: str) -> str:
+        if v not in ("basic", "premium"):
+            raise ValueError("credit_type must be basic or premium")
+        return v

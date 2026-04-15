@@ -1,3 +1,8 @@
+# Core dependencies: `docker compose up` (Mongo, Redis, Postgres).
+# Full local API stack (proxy + microservices): `docker compose --profile fullstack up --build`
+# or: `bash scripts/dev-full-stack.sh`
+#
+# Set real Cloudflare R2 credentials for PDF upload/processing; placeholder values only allow the container to start.
 version: '3.8'
 
 services:
@@ -88,6 +93,129 @@ services:
         condition: service_healthy
     profiles:
       - microservices
+      - fullstack
+
+  auth-service:
+    build:
+      context: ./microservices/auth-service
+      dockerfile: dockerfile
+    container_name: audiobooker-auth-service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8001
+      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_DB_NAME=audiobooker_auth
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    profiles:
+      - fullstack
+
+  backend:
+    build:
+      context: ./microservices/backend
+      dockerfile: dockerfile
+    container_name: audiobooker-backend
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8002
+      - DATABASE_URL=mongodb://mongodb:27017
+      - DATABASE_NAME=audiobooker_backend_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - fullstack
+
+  tts-infrastructure:
+    build:
+      context: ./microservices/tts-infrastructure
+      dockerfile: dockerfile
+    container_name: audiobooker-tts
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8003
+      - DATABASE_URL=mongodb://mongodb:27017
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    profiles:
+      - fullstack
+
+  pdf-processor:
+    build:
+      context: ./microservices/pdf-processor
+      dockerfile: dockerfile
+    container_name: audiobooker-pdf-processor
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8004
+      - DATABASE_URL=mongodb://mongodb:27017
+      - DATABASE_NAME=audiobooker_pdf_processing_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID:-local-dev}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID:-local-dev}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY:-local-dev}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME:-local-dev}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - fullstack
+
+  api-proxy:
+    build:
+      context: ./api_proxy
+      dockerfile: Dockerfile
+    container_name: audiobooker-api-proxy
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PDF_SERVICE_URL=http://pdf-processor:8004/api/v1/pdf
+      - TTS_SERVICE_URL=http://tts-infrastructure:8003/api/v1/tts
+      - AUTH_SERVICE_URL=http://auth-service:8001/api/v1/auth
+      - BACKEND_SERVICE_URL=http://backend:8002/api/v1
+      - PAYMENT_SERVICE_URL=http://payment-service:8005/api/v1/payment
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      backend:
+        condition: service_started
+      pdf-processor:
+        condition: service_started
+      tts-infrastructure:
+        condition: service_started
+      payment-service:
+        condition: service_started
+    profiles:
+      - fullstack
 
 volumes:
   postgres-data:

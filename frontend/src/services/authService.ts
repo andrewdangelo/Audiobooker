@@ -243,6 +243,20 @@ class AuthService {
   }
 
   /**
+   * Deduct one basic or premium credit on the server (authenticated).
+   */
+  async consumeConversionCredit(
+    creditType: 'basic' | 'premium',
+  ): Promise<{ basic_credits: number; premium_credits: number; total_credits: number }> {
+    const response = await api.post<{
+      basic_credits: number
+      premium_credits: number
+      total_credits: number
+    }>(`${this.ACCOUNTS_PREFIX}/credits/consume-conversion`, { credit_type: creditType })
+    return response.data
+  }
+
+  /**
    * Get user subscription status
    */
   async getSubscriptionStatus(token: string): Promise<{

@@ -74,6 +74,22 @@ class Settings(BaseSettings):
         description="Shared secret used to authenticate inter-service HTTP calls"
     )
 
+    # Backend internal API (same origin as backend FastAPI app.api.v1 prefix)
+    BACKEND_SERVICE_BASE_URL: str = Field(
+        default="http://127.0.0.1:8002/api/v1",
+        description="Base URL of the backend service (for POST /internal/conversion/complete)",
+    )
+
+    # Optional pipeline health checks (full URL to a GET endpoint, e.g. /health)
+    AI_SERVICE_HEALTH_URL: Optional[str] = Field(
+        default=None,
+        description="If set, pipeline pings this URL between PDF/LLM and TTS stages",
+    )
+    TTS_SERVICE_HEALTH_URL: Optional[str] = Field(
+        default=None,
+        description="If set, pipeline pings this URL before backend finalization",
+    )
+
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         """Validate environment values"""

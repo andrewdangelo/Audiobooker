@@ -20,7 +20,8 @@ import {
   Settings,
   HelpCircle,
   List,
-  Coins
+  Coins,
+  ListChecks,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -75,6 +76,12 @@ const secondaryNavItems = [
     label: 'Upload', 
     href: '/upload',
     description: 'Upload new audiobooks'
+  },
+  { 
+    icon: ListChecks, 
+    label: 'Uploads', 
+    href: '/uploads',
+    description: 'Track upload and conversion progress'
   },
   { 
     icon: Coins, 

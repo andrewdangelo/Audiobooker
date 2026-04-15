@@ -4,6 +4,7 @@ import { useAppDispatch } from './store/hooks'
 import { logout } from './store/slices/authSlice'
 import Dashboard from './pages/Dashboard'
 import Upload from './pages/Upload'
+import UploadsProgress from './pages/UploadsProgress'
 import Library from './pages/Library'
 import Store from './pages/Store'
 import StoreBookDetail from './pages/StoreBookDetail'
@@ -71,6 +72,7 @@ function App() {
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/book/:id" element={<BookDetail />} />
           <Route path="/upload" element={<Upload />} />
+          <Route path="/uploads" element={<UploadsProgress />} />
           <Route path="/publish/:audiobookId" element={<PublishToStore />} />
           <Route path="/my-listings" element={<MyListings />} />
           <Route path="/preview/:previewId" element={<AudiobookPreview />} />

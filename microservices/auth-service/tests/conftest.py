@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mongomock
 import pytest
+from starlette.testclient import TestClient
 
 from app.database.mongodb import MongoDB
 
@@ -38,10 +39,27 @@ class _FakeAsyncDb:
         return _AsyncCollection(self._db[name])
 
 
+async def _fake_mongo_connect(cls):
+    cls.client = MagicMock()
+    cls.db = _FakeAsyncDb()
+
+
+async def _fake_mongo_disconnect(cls):
+    return None
+
+
 @pytest.fixture
-def auth_mongo_wired():
-    MongoDB.client = MagicMock()
-    MongoDB.db = _FakeAsyncDb()
-    yield MongoDB.db
+def client():
+    """Auth TestClient with MongoDB wired to mongomock (no real Motor connect)."""
+
+    from main import app
+
+    with (
+        patch.object(MongoDB, "connect", classmethod(_fake_mongo_connect)),
+        patch.object(MongoDB, "disconnect", classmethod(_fake_mongo_disconnect)),
+    ):
+        with TestClient(app) as c:
+            yield c
+
     MongoDB.client = None
     MongoDB.db = None

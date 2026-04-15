@@ -38,9 +38,9 @@ def validate_r2_key(key: str) -> str:
         if char in key:
             raise ValidationError(f"R2 key contains invalid character: {char}")
     
-    # Check if it's a PDF TODO we must check for ebooks as well with those respective extensions
-    if not key.lower().endswith('.pdf'):
-        raise ValidationError("R2 key must point to a PDF file (.pdf extension)")
+    lower = key.lower()
+    if not (lower.endswith('.pdf') or lower.endswith('.epub')):
+        raise ValidationError("R2 key must point to a .pdf or .epub file")
     
     return key
 
@@ -91,19 +91,30 @@ def validate_file_size(size_bytes: int, max_size_mb: int = 100) -> None:
 
 def is_valid_pdf_magic_number(data: bytes) -> bool:
     """
-    Check if bytes start with PDF magic number
-    
-    Args:
-        data: File bytes to check
-    
-    Returns:
-        True if valid PDF or other extensions, otherwise False
+    Check if bytes start with the PDF magic sequence (%PDF).
     """
     if len(data) < 4:
         return False
-    
-    # PDF files start with %PDF
-    return data[:4] == b'%PDF' #TODO check for other ebook formats as well
+    return data[:4] == b'%PDF'
+
+
+def is_valid_epub_magic_number(data: bytes) -> bool:
+    """
+    EPUB is a ZIP container; ZIP local file header starts with PK\\x03\\x04.
+    """
+    if len(data) < 4:
+        return False
+    return data[:4] == b"PK\x03\x04"
+
+
+def is_allowed_book_magic(data: bytes, filename: str) -> bool:
+    """True if file bytes match an allowed format for the given filename extension."""
+    lower = (filename or "").lower()
+    if lower.endswith(".pdf"):
+        return is_valid_pdf_magic_number(data)
+    if lower.endswith(".epub"):
+        return is_valid_epub_magic_number(data)
+    return False
 
 
 def sanitize_filename(filename: str) -> str:

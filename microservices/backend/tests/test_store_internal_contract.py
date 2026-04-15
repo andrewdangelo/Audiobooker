@@ -2,18 +2,13 @@
 Contract tests for store catalog, purchase fulfillment, and internal library API.
 Uses mongomock (no real MongoDB required).
 """
-import pytest
 import mongomock
-from httpx import ASGITransport, AsyncClient
+import pytest
+from starlette.testclient import TestClient
 
 import app.database.database as db_module
 from app.models.db_models import Collections
 from app.core import config_settings
-
-
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +29,7 @@ def books_db():
     coll = db[Collections.BOOKS]
     coll.insert_one(
         {
+            "_id": "book-store-1",
             "id": "book-store-1",
             "title": "Contract Book",
             "author": "Tester",
@@ -49,13 +45,11 @@ def books_db():
     return db
 
 
-@pytest.mark.asyncio
-async def test_get_store_catalog_shape(books_db):
+def test_get_store_catalog_shape(books_db):
     from main import app
 
-    transport = ASGITransport(app=app, lifespan="off")
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.get("/api/v1/store/catalog")
+    with TestClient(app) as client:
+        r = client.get("/api/v1/store/catalog")
 
     assert r.status_code == 200
     data = r.json()
@@ -66,13 +60,11 @@ async def test_get_store_catalog_shape(books_db):
     assert data["books"][0]["title"] == "Contract Book"
 
 
-@pytest.mark.asyncio
-async def test_post_store_purchase_adds_library(books_db):
+def test_post_store_purchase_adds_library(books_db):
     from main import app
 
-    transport = ASGITransport(app=app, lifespan="off")
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
+    with TestClient(app) as client:
+        r = client.post(
             "/api/v1/store/purchase",
             params={"user_id": "user-1"},
             json={"book_id": "book-store-1", "purchase_type": "basic"},
@@ -88,8 +80,7 @@ async def test_post_store_purchase_adds_library(books_db):
     assert lib.get("purchase_type") == "basic"
 
 
-@pytest.mark.asyncio
-async def test_post_store_purchase_idempotent(books_db):
+def test_post_store_purchase_idempotent(books_db):
     from main import app
 
     db = db_module.get_database()
@@ -102,9 +93,8 @@ async def test_post_store_purchase_idempotent(books_db):
         }
     )
 
-    transport = ASGITransport(app=app, lifespan="off")
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
+    with TestClient(app) as client:
+        r = client.post(
             "/api/v1/store/purchase",
             params={"user_id": "user-2"},
             json={"book_id": "book-store-1"},
@@ -114,31 +104,27 @@ async def test_post_store_purchase_idempotent(books_db):
     assert r.json()["message"] == "Already owned"
 
 
-@pytest.mark.asyncio
-async def test_internal_library_requires_key(books_db):
+def test_internal_library_requires_key(books_db):
     from main import app
 
-    transport = ASGITransport(app=app, lifespan="off")
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
+    with TestClient(app) as client:
+        r = client.post(
             "/api/v1/internal/library/user-svc",
             json={"book_id": "book-store-1"},
         )
     assert r.status_code == 403
 
 
-@pytest.mark.asyncio
-async def test_internal_library_create_and_idempotent(books_db):
+def test_internal_library_create_and_idempotent(books_db):
     from main import app
 
-    transport = ASGITransport(app=app, lifespan="off")
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r1 = await client.post(
+    with TestClient(app) as client:
+        r1 = client.post(
             "/api/v1/internal/library/user-svc",
             json={"book_id": "book-store-1"},
             headers={"X-Internal-Service-Key": "test-internal-key"},
         )
-        r2 = await client.post(
+        r2 = client.post(
             "/api/v1/internal/library/user-svc",
             json={"book_id": "book-store-1"},
             headers={"X-Internal-Service-Key": "test-internal-key"},

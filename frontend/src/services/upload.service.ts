@@ -1,13 +1,11 @@
 /**
  * Upload Service
- * 
- * Handles PDF file uploads through the API proxy to the PDF processor microservice.
- * 
- * Proxy route:  POST /pdf_processor/pdf_processor/upload_new_pdf
- *   → forwards to: http://PDF_SERVICE/api/v1/pdf/pdf_processor/upload_new_pdf
  *
+ * Handles PDF and EPUB uploads through the API proxy to the PDF processor microservice.
+ *
+ * Proxy route:  POST /pdf_processor/pdf_processor/upload_new_pdf
  * Job-status:   GET  /pdf_processor/pdf_processor/job/{job_id}
- *   → forwards to: http://PDF_SERVICE/api/v1/pdf/pdf_processor/job/{job_id}
+ * Process:      POST /pdf_processor/pdf_processor/process_pdf  (body `r2_pdf_path` may be .pdf or .epub)
  */
 
 import api from './api'
@@ -18,7 +16,7 @@ const PDF_PROXY = '/pdf_processor/pdf_processor'
 
 export const uploadService = {
   /**
-   * Upload a PDF file for audiobook conversion.
+   * Upload a PDF or EPUB for audiobook conversion.
    * Sends multipart/form-data to the PDF processor via the API proxy.
    *
    * @param file        The PDF File object selected by the user
@@ -60,14 +58,18 @@ export const uploadService = {
       fileSize: file.size,
       status: data.status === 'COMPLETED' ? 'completed' : 'processing',
       message: data.message,
+      pdfPath: data.pdf_path ?? data.pdfPath,
+      title: data.title,
     }
   },
 
   /**
    * Get the processing status of a previously uploaded PDF job.
    */
-  async getStatus(jobId: string) {
-    const response = await api.get(`${PDF_PROXY}/job/${jobId}`)
+  async getStatus(jobId: string, userId: string) {
+    const response = await api.get(`${PDF_PROXY}/job/${jobId}`, {
+      params: { user_id: userId },
+    })
     return response.data
   },
 
@@ -75,10 +77,13 @@ export const uploadService = {
    * Trigger full PDF-to-text processing for an already-uploaded R2 PDF.
    * Called after uploadPDF when the caller wants to start extraction.
    */
-  async processPDF(r2PdfPath: string, userId: string) {
+  async processPDF(r2PdfPath: string, userId: string, metadata?: Record<string, unknown>) {
     const response = await api.post(
-      `${PDF_PROXY.replace('/pdf_processor', '')}/pdf_processor/process_pdf`,
-      { r2_pdf_path: r2PdfPath },
+      `${PDF_PROXY}/process_pdf`,
+      {
+        r2_pdf_path: r2PdfPath,
+        ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
+      },
       { params: { user_id: userId } },
     )
     return response.data

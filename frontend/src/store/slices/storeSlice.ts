@@ -142,7 +142,7 @@ export type StoreSortOption =
  * Maps backend API book response fields to the frontend StoreBook shape.
  * Backend uses snake_case; frontend StoreBook uses camelCase.
  */
-function normalizeStoreBook(book: Record<string, unknown>): StoreBook {
+export function normalizeStoreBook(book: Record<string, unknown>): StoreBook {
   return {
     id: (book.id ?? book._id ?? '') as string,
     title: (book.title ?? '') as string,
@@ -196,7 +196,8 @@ function normalizeStoreBook(book: Record<string, unknown>): StoreBook {
 // INITIAL STATE
 // ============================================================================
 
-const initialState: StoreState = {
+/** Exposed for tests and devtools; do not mutate. */
+export const storeInitialState: StoreState = {
   books: {},
   bookIds: [],
   featuredBookIds: [],
@@ -217,6 +218,8 @@ const initialState: StoreState = {
   userCredits: 3, // Mock basic credits
   userPremiumCredits: 2, // Mock premium credits (earned separately, used only for theatrical editions)
 }
+
+const initialState = storeInitialState
 
 // ============================================================================
 // ASYNC THUNKS
@@ -837,7 +840,6 @@ export const selectStoreSort = (state: RootState) => ({
   sortOrder: state.store.sortOrder,
 })
 
-/**
 /**
  * Select user's basic credits balance.
  */

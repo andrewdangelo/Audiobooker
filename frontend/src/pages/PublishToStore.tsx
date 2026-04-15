@@ -8,18 +8,16 @@
  * @author Andrew D'Angelo
  */
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { PermissionGate } from '@/components/common/PermissionGate';
-import { usePermissions } from '@/hooks/usePermissions';
 import { useToast } from '@/hooks/useToast';
 import { Permission } from '@/types/permissions';
 import { 
@@ -34,10 +32,7 @@ import {
   FileText, 
   Image, 
   Tag, 
-  Globe, 
   Calendar,
-  User,
-  Mic,
   Save,
   Eye,
   X,
@@ -48,7 +43,6 @@ const PublishToStore = () => {
   const { audiobookId } = useParams<{ audiobookId: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { hasPermission } = usePermissions();
   const [isLoading, setIsLoading] = useState(false);
   const [currentTag, setCurrentTag] = useState('');
 
@@ -112,7 +106,6 @@ const PublishToStore = () => {
       toast({
         title: "Validation Error",
         description: "Please fill in all required fields.",
-        variant: "destructive",
       });
       setIsLoading(false);
       return;
@@ -139,7 +132,6 @@ const PublishToStore = () => {
       toast({
         title: "Error",
         description: "Failed to publish audiobook. Please try again.",
-        variant: "destructive",
       });
     } finally {
       setIsLoading(false);

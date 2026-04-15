@@ -6,11 +6,15 @@ Core service for extracting and processing text from PDFs.
 __author__ = "Mohammad Saifan"
 
 import io
+import re
 import time
 import asyncio
+import html as html_module
 from typing import (Dict, Any, List)
 from datetime import datetime
 
+import ebooklib
+from ebooklib import epub
 import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
@@ -27,6 +31,7 @@ from app.utils.chunker import TextChunker
 
 from app.services import r2_service
 from app.services.llm_speaker_chunker import SpeakerChunker
+from app.services.pipeline_client import notify_backend_conversion_complete, ping_service_health
 from app.database import (database, db_engine)
 
 
@@ -81,24 +86,123 @@ class PDFProcessorService(Logger):
     
     # ==================== PDF PROCESSOR TASKS ====================
     
-    async def process_pdf_task(self, job_id: str, user_id: str, r2_key: str, chunk_size: int, chunk_overlap: int, output_format: str):
-        """Background task for processing PDF"""
+    def _strip_html_to_text(self, html: str) -> str:
+        t = re.sub(r"(?is)<script.*?>.*?</script>", " ", html)
+        t = re.sub(r"(?is)<style.*?>.*?</style>", " ", t)
+        t = re.sub(r"<[^>]+>", " ", t)
+        return html_module.unescape(re.sub(r"\s+", " ", t).strip())
+
+    def _process_epub_sync(
+        self, epub_data: bytes, chunk_size: int, chunk_overlap: int, output_format: str
+    ) -> Dict[str, Any]:
+        start_time = time.time()
+        book = epub.read_epub(io.BytesIO(epub_data))
+        texts: List[str] = []
+        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            raw = item.get_content()
+            html = raw.decode("utf-8", errors="ignore")
+            chunk = self._strip_html_to_text(html)
+            if chunk:
+                texts.append(chunk)
+        full_text = "\n".join(texts)
+        if not full_text.strip():
+            raise ValueError("EPUB contains no extractable text")
+
+        title_guess = ""
+        author_guess = ""
         try:
-            self.logger.info(f"Starting PDF processing for job {job_id}, user {user_id}")
+            tmeta = book.get_metadata("DC", "title")
+            if tmeta:
+                title_guess = tmeta[0][0]
+            ameta = book.get_metadata("DC", "creator")
+            if ameta:
+                author_guess = ameta[0][0]
+        except Exception:
+            pass
+
+        chunks = asyncio.run(
+            self.chunker.chunk_text(
+                text=full_text, chunk_size=chunk_size, overlap=chunk_overlap, page_map=None
+            )
+        )
+        processing_time = time.time() - start_time
+        return {
+            "r2_key": "",
+            "total_pages": 0,
+            "total_characters": len(full_text),
+            "total_chunks": len(chunks),
+            "chunks": chunks,
+            "metadata": {
+                "title": title_guess or "",
+                "author": author_guess or "",
+                "subject": "",
+                "creator": "",
+                "producer": "epub",
+                "creation_date": "",
+                "mod_date": "",
+            },
+            "processing_time": round(processing_time, 2),
+            "created_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
+        }
+
+    async def process_epub(self, epub_data: bytes, chunk_size: int, chunk_overlap: int, output_format: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._process_epub_sync, epub_data, chunk_size, chunk_overlap, output_format
+        )
+
+    async def process_pdf_task(
+        self,
+        job_id: str,
+        user_id: str,
+        r2_key: str,
+        chunk_size: int,
+        chunk_overlap: int,
+        output_format: str,
+        credit_type: str = "basic",
+    ):
+        """Background task for processing a PDF or EPUB from R2."""
+        try:
+            self.logger.info(f"Starting book processing for job {job_id}, user {user_id}")
             
             r2_svc = r2_service.R2Service()
             
-            await self.update_job(job_id, {"status": "processing", "message": "Downloading PDF from R2", "progress": 10})
+            await self.update_job(
+                job_id,
+                {
+                    "status": "processing",
+                    "pipeline_stage": "pdf_processing",
+                    "message": "Downloading source from R2",
+                    "progress": 10,
+                },
+            )
             
-            pdf_data = r2_svc.download_file(r2_key)
+            file_data = r2_svc.download_file(r2_key)
             
-            await self.update_job(job_id, {"message": "Extracting text from PDF", "progress": 30})
-            
-            result = await self.process_pdf(pdf_data=pdf_data, chunk_size=chunk_size, chunk_overlap=chunk_overlap, output_format=output_format)
+            await self.update_job(
+                job_id,
+                {"message": "Extracting text", "pipeline_stage": "text_extraction", "progress": 30},
+            )
+
+            is_epub = r2_key.lower().endswith(".epub")
+            if is_epub:
+                result = await self.process_epub(
+                    epub_data=file_data,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    output_format=output_format,
+                )
+            else:
+                result = await self.process_pdf(
+                    pdf_data=file_data,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    output_format=output_format,
+                )
             
             await self.update_job(job_id, {"progress": 80, "message": "Uploading processed data to R2"})
-            
-            output_key = f"processed_audiobooks/{job_id.replace('.pdf', '')}_processed.json"
+
+            job_base = job_id.replace(".pdf", "").replace(".epub", "")
+            output_key = f"processed_audiobooks/{job_base}_processed.json"
             r2_svc.upload_processed_data(key=output_key, data=result)
             
             # LLM Speaker Chunking (if enabled)
@@ -108,6 +212,7 @@ class PDFProcessorService(Logger):
                     self.logger.info(f"Starting LLM speaker chunking for job {job_id}")
                     await self.update_job(job_id, {
                         "progress": 85,
+                        "pipeline_stage": "ai_enrichment",
                         "message": "Processing speaker attribution with LLM"
                     })
                     
@@ -159,7 +264,7 @@ class PDFProcessorService(Logger):
                     )
                     
                     # Upload script to R2
-                    script_output_key = f"processed_audiobooks/{job_id.replace('.pdf', '')}_script.json"
+                    script_output_key = f"processed_audiobooks/{job_base}_script.json"
                     r2_svc.upload_processed_data(key=script_output_key, data=script_result)
                     
                     # Log detailed completion stats
@@ -184,44 +289,105 @@ class PDFProcessorService(Logger):
                     self.logger.error(f"LLM speaker chunking failed for job {job_id}: {str(e)}", exc_info=True)
                     # Continue processing even if LLM chunking fails
                     script_output_key = None
-            
-            # Create audiobook record in database
+            else:
+                await self.update_job(job_id, {
+                    "pipeline_stage": "ai_enrichment",
+                    "progress": 86,
+                    "message": "Speaker enrichment skipped (LLM disabled)",
+                })
+
+            await self.update_job(job_id, {
+                "pipeline_stage": "ai_service",
+                "progress": 88,
+                "message": "Contacting AI microservice (optional)",
+            })
+            await ping_service_health(settings.AI_SERVICE_HEALTH_URL, "AI service")
+
+            await self.update_job(job_id, {
+                "pipeline_stage": "tts",
+                "progress": 91,
+                "message": "TTS infrastructure (optional health check)",
+            })
+            await ping_service_health(settings.TTS_SERVICE_HEALTH_URL, "TTS service")
+
+            # Create processed-audiobook record in pdf-processor Mongo (processing audit)
             self.logger.info(f"Creating database record for job {job_id}")
             from app.database import database, db_engine
             from app.models.db_models import Collections
-            
+
             db_func = database.get_db()
             db = db_func()
             audiobook_service = db_engine.MongoDBService(db, Collections.PROCESSED_AUDIOBOOKS)
-            
+
             audiobook_data = {"r2_key": job_id, "user_id": user_id, "title": r2_key.split("/")[-1], "pdf_path": r2_key, "status": "COMPLETED"}
-            
-            audiobook = audiobook_service.create(audiobook_data)
-            
-            self.logger.info(f"Upload complete - ID: {audiobook.get('r2_key')}")
-            
-            # Update job with completion results
+
+            audiobook_service.create(audiobook_data)
+
+            meta = result.get("metadata") or {}
+            title = (meta.get("title") or "").strip() or r2_key.split("/")[-1].rsplit(".", 1)[0]
+            author = (meta.get("author") or "").strip() or "Unknown"
+            chunk_list = result.get("chunks") or []
+            desc_bits: List[str] = []
+            for c in chunk_list[:10]:
+                if isinstance(c, dict) and c.get("text"):
+                    desc_bits.append(str(c["text"]))
+            description = (" ".join(desc_bits))[:4000] if desc_bits else None
+            source_format = "epub" if r2_key.lower().endswith(".epub") else "pdf"
+
+            await self.update_job(job_id, {
+                "pipeline_stage": "backend_sync",
+                "progress": 95,
+                "message": "Creating library audiobook in backend",
+            })
+
+            backend_book_id = await notify_backend_conversion_complete(
+                user_id=user_id,
+                processor_job_id=job_id,
+                title=title,
+                author=author,
+                description=description,
+                credit_type=credit_type if credit_type in ("basic", "premium") else "basic",
+                source_format=source_format,
+                source_r2_path=r2_key,
+                processed_text_r2_key=output_key,
+                script_r2_key=script_output_key,
+            )
+
             job_result = {
                 "output_key": output_key,
                 "total_chunks": result.get("total_chunks", 0),
                 "total_pages": result.get("total_pages", 0),
-                "total_characters": result.get("total_characters", 0)
+                "total_characters": result.get("total_characters", 0),
             }
-            
-            # Add script output if LLM chunking was performed
+
             if script_output_key:
                 job_result["script_output_key"] = script_output_key
                 job_result["llm_chunking_enabled"] = True
-            
+
+            if not backend_book_id:
+                await self.update_job(job_id, {
+                    "status": "failed",
+                    "pipeline_stage": "backend_sync",
+                    "progress": 0,
+                    "message": "Backend library sync failed",
+                    "completed_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
+                    "error": "backend_conversion_failed",
+                    "result": job_result,
+                })
+                self.logger.error("Job %s: backend did not return book_id", job_id)
+                return
+
             await self.update_job(job_id, {
                 "status": "completed",
+                "pipeline_stage": "completed",
                 "progress": 100,
                 "message": "Processing completed successfully",
                 "completed_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
-                "result": job_result
+                "result": job_result,
+                "audiobook_id": backend_book_id,
             })
-            
-            self.logger.info(f"Job {job_id} completed successfully")
+
+            self.logger.info(f"Job {job_id} completed successfully (backend book {backend_book_id})")
             
         except Exception as e:
             self.logger.error(f"Job {job_id} failed: {str(e)}", exc_info=True)

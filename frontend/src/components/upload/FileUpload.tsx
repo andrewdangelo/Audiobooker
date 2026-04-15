@@ -2,12 +2,12 @@ import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CheckCircle2, Crown, FileUp, Sparkles, UploadCloud, Zap } from 'lucide-react'
 
-import { createMockUploadedAudiobook, formatFileSize } from '@/data/mockConversion'
-import { addAudiobook, useAppDispatch, useAppSelector } from '@/store'
+import { formatFileSize } from '@/data/mockConversion'
+import { fetchUserCredits, registerUploadJob, runProcessorPolling, useAppDispatch, useAppSelector } from '@/store'
 import { selectCurrentUser } from '@/store/slices/authSlice'
-import { setUserCredits, setUserPremiumCredits } from '@/store/slices/storeSlice'
 import { selectUserCredits, selectUserPremiumCredits } from '@/store/slices/storeSlice'
 import { uploadService } from '@/services/upload.service'
+import { authService } from '@/services/authService'
 import UploadProgress from './UploadProgress'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -21,6 +21,14 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+
+function titleFromFileName(fileName: string) {
+  return fileName
+    .replace(/\.(pdf|epub)$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
 type CreditType = 'basic' | 'premium'
 
@@ -90,8 +98,9 @@ export default function FileUpload() {
     setError(null)
     setUploadResult(null)
 
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setError('Please select a PDF file.')
+    const name = file.name.toLowerCase()
+    if (!name.endsWith('.pdf') && !name.endsWith('.epub')) {
+      setError('Please select a PDF or EPUB file.')
       return
     }
 
@@ -117,35 +126,74 @@ export default function FileUpload() {
     setProgress(0)
 
     try {
+      const userId = currentUser?.id
+      if (!userId) {
+        setError('You must be signed in to upload.')
+        return
+      }
+
+      await authService.consumeConversionCredit(selectedCreditType)
+
       const result = await uploadService.uploadPDF(
         selectedFile,
-        currentUser?.id ?? '',
+        userId,
         (nextProgress) => setProgress(nextProgress),
       )
 
-      // TODO(back-end): move credit reservation/deduction to the upload confirmation
-      // endpoint so the server remains the source of truth for available credits.
-      if (selectedCreditType === 'premium') {
-        dispatch(setUserPremiumCredits(Math.max(0, premiumCredits - 1)))
+      const localId = crypto.randomUUID()
+      let processorJobId: string | undefined
+      let pdfJobStartFailedMessage: string | undefined
+
+      if (result.pdfPath) {
+        try {
+          const processRes = await uploadService.processPDF(result.pdfPath, userId, {
+            credit_type: selectedCreditType,
+          })
+          processorJobId = processRes.job_id as string | undefined
+        } catch (procErr: any) {
+          pdfJobStartFailedMessage =
+            procErr.response?.data?.detail ||
+            procErr.message ||
+            'Could not start processing job'
+        }
       } else {
-        dispatch(setUserCredits(Math.max(0, basicCredits - 1)))
+        pdfJobStartFailedMessage = 'Upload response missing pdf_path; cannot start conversion.'
       }
 
-      const draftBook = createMockUploadedAudiobook({
-        file: selectedFile,
-        uploadId: result.id,
-        creditType: selectedCreditType,
-      })
+      dispatch(
+        registerUploadJob({
+          localId,
+          uploadId: result.id,
+          pdfPath: result.pdfPath,
+          processorJobId,
+          title: result.title || titleFromFileName(selectedFile.name),
+          fileName: selectedFile.name,
+          fileSize: selectedFile.size,
+          creditType: selectedCreditType,
+          pdfJobStartFailedMessage,
+        }),
+      )
 
-      // TODO(back-end): replace this optimistic local insert with the audiobook record
-      // returned by the API proxy once the PDF processor emits staged metadata.
-      dispatch(addAudiobook(draftBook))
+      if (processorJobId) {
+        void dispatch(runProcessorPolling({ localId, jobId: processorJobId, userId }))
+      }
+
+      await dispatch(fetchUserCredits()).unwrap().catch(() => undefined)
+
       setUploadResult({ id: result.id, status: result.status })
       setProgress(100)
       setCreditDialogOpen(false)
-      navigate(`/book/${draftBook.id}`)
+      navigate('/library')
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || 'Upload failed')
+      void dispatch(fetchUserCredits()).unwrap().catch(() => undefined)
+      const detail = err.response?.data?.detail
+      setError(
+        typeof detail === 'string'
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join(', ')
+            : err.message || 'Upload failed',
+      )
     } finally {
       setUploading(false)
     }
@@ -173,7 +221,7 @@ export default function FileUpload() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf"
+            accept=".pdf,.epub,application/pdf,application/epub+zip"
             onChange={(e) => {
               const files = e.target.files
               if (files && files.length > 0) {
@@ -192,7 +240,7 @@ export default function FileUpload() {
               <p className="text-lg font-semibold">{selectedFile.name}</p>
               <div className="flex flex-wrap items-center justify-center gap-2 text-sm text-muted-foreground">
                 <Badge variant="outline">{formatFileSize(selectedFile.size)}</Badge>
-                <Badge variant="outline">PDF ready for upload</Badge>
+                <Badge variant="outline">Ready for upload</Badge>
               </div>
               <p className="mx-auto max-w-xl text-sm text-muted-foreground">
                 The next step will ask which credit type this upload should consume before the file is finalized.
@@ -200,9 +248,9 @@ export default function FileUpload() {
             </div>
           ) : (
             <div className="space-y-2">
-              <p className="text-lg font-semibold">Drop your PDF here or click to browse</p>
+              <p className="text-lg font-semibold">Drop your PDF or EPUB here or click to browse</p>
               <p className="text-sm text-muted-foreground">
-                PDF files only, up to 50MB. Text-based PDFs will produce the best metadata and narration results.
+                PDF or EPUB, up to 50MB. Text-based PDFs and reflowable EPUBs produce the best extraction results.
               </p>
             </div>
           )}
@@ -214,7 +262,7 @@ export default function FileUpload() {
               <div>
                 <h3 className="font-semibold">Upload summary</h3>
                 <p className="text-sm text-muted-foreground">
-                  Choose whether this PDF enters the basic or premium conversion path.
+                  Choose whether this book enters the basic or premium conversion path.
                 </p>
               </div>
               <div className="flex gap-2">
@@ -241,7 +289,7 @@ export default function FileUpload() {
             <CheckCircle2 className="h-4 w-4" />
             <AlertTitle>Upload staged successfully</AlertTitle>
             <AlertDescription>
-              Upload id `{uploadResult.id}` is now represented in the library UI with mock metadata until the processor response is wired in.
+              Upload id `{uploadResult.id}` is queued for conversion. Open Library to see the new title when processing finishes.
             </AlertDescription>
           </Alert>
         )}
@@ -260,7 +308,7 @@ export default function FileUpload() {
           <DialogHeader>
             <DialogTitle>Select the conversion credit</DialogTitle>
             <DialogDescription>
-              This choice determines which setup screen the user sees after the upload finishes.
+              This choice is sent to the conversion pipeline and stored on your library copy when processing completes.
             </DialogDescription>
           </DialogHeader>
 
@@ -310,18 +358,16 @@ export default function FileUpload() {
 
           <Alert>
             <Sparkles className="h-4 w-4" />
-            <AlertTitle>Production TODO</AlertTitle>
+            <AlertTitle>Credit confirmation</AlertTitle>
             <AlertDescription>
-              The chosen credit type is currently tracked in frontend state only. A real confirm endpoint should reserve the credit and return the staged book metadata payload.
+              Confirming deducts one {selectedCreditType} credit on the server before the file is uploaded. Track pipeline progress on the Uploads page.
             </AlertDescription>
           </Alert>
 
           <div className="rounded-2xl border bg-muted/30 p-4 text-sm">
             <div className="mb-1 font-medium">Selected path: {selectedOption.label}</div>
             <div className="text-muted-foreground">
-              {selectedOption.type === 'premium'
-                ? 'After upload you will land on the premium setup view with narrator and character voice assignments.'
-                : 'After upload you will land on the basic setup view with a suggested narrator and alternate voice samples.'}
+              After upload you will go to the library; the new audiobook appears when the pipeline finishes (watch progress on the Uploads page).
             </div>
           </div>
 
