@@ -6,7 +6,7 @@ Using Pydantic Settings, Will Automatically Load from environment variables with
 
 from pydantic_settings import BaseSettings
 from pydantic import Field, validator
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pathlib import Path
 
 
@@ -63,8 +63,14 @@ class Settings(BaseSettings):
     LLM_DISCOVERY_CHARS: int = Field(default=17000)
     LLM_DELAY_BETWEEN_REQUESTS: float = Field(default=2.0)
     LLM_ENDPOINT_NAME: str = Field(default="qwen-finetuned-001")
-    
+
     TTS_CONCURRENCY: int = Field(default=1)
+
+    MATT_CF_ACCOUNT_ID: str
+    MATT_CF_AI_TOKEN: str
+    
+    TAVILY_API_KEY: str
+
     # Settings-like values
     # LLM_MAX_TOKENS: int = Field(default=4096)
     # LLM_TEMPERATURE: int = Field(default=0.2)

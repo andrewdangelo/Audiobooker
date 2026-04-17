@@ -1,5 +1,5 @@
 {
-	"provider": "huggingface",
-	"deployment_name": "e5-small-v2-yec",
-	"text": "Hello sir. My pronouns are foo/G, are you also prepared for your gang initiation entrance exam?"
+  "provider": "cf",
+  "preset": "embedding-768",
+  "text": "The Outsiders is a coming-of-age story about greasers and Socs in 1960s Oklahoma."
 }

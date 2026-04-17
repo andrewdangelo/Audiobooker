@@ -1,0 +1,68 @@
+[
+    {
+        "id": "chat-basic",
+        "provider": "cf",
+        "deployment_name": "@cf/openai/gpt-oss-20b",
+        "model_name": "gpt-oss-20b",
+        "url": "https://developers.cloudflare.com/workers-ai/models/gpt-oss-20b/",
+        "task": "txt",
+        "description": "OpenAI open-weight model optimized for low latency and general-purpose chat; good balance of speed and quality but less capable than larger siblings on complex reasoning tasks.",
+        "context_window_tokens": 128000,
+        "max_output_tokens": 32768
+    },
+    {
+        "id": "chat-fast",
+        "provider": "cf",
+        "deployment_name": "@cf/meta/llama-3.1-8b-instruct-awq",
+        "model_name": "llama-3.1-8b-instruct-awq",
+        "url": "https://developers.cloudflare.com/workers-ai/models/llama-3.1-8b-instruct-awq/",
+        "task": "txt",
+        "description": "Lightweight AWQ int4-quantized 8B Llama model optimized for maximum throughput and minimal latency; trades some accuracy for speed and has a small 8K context window.",
+        "context_window_tokens": 8192,
+        "max_output_tokens": 2048
+    },
+    {
+        "id": "chat-reasoning",
+        "provider": "cf",
+        "deployment_name": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        "model_name": "deepseek-r1-distill-qwen-32b",
+        "url": "https://developers.cloudflare.com/workers-ai/models/deepseek-r1-distill-qwen-32b/",
+        "task": "txt",
+        "description": "DeepSeek-R1 distilled into a 32B dense model via chain-of-thought knowledge transfer; outperforms o1-mini on math, code, and reasoning benchmarks but is slower than non-reasoning models and uses the full context window for its thinking traces.",
+        "context_window_tokens": 32768,
+        "max_output_tokens": 32768
+    },
+    {
+        "id": "chat-knowledge",
+        "provider": "cf",
+        "deployment_name": "@cf/openai/gpt-oss-120b",
+        "model_name": "gpt-oss-120b",
+        "url": "https://developers.cloudflare.com/workers-ai/models/gpt-oss-120b/",
+        "task": "txt",
+        "description": "OpenAI's largest open-weight model designed for production general-purpose and high-reasoning use cases with a 128K context window; higher latency and cost than smaller alternatives.",
+        "context_window_tokens": 128000,
+        "max_output_tokens": 32768
+    },
+    {
+        "id": "embedding-768",
+        "provider": "cf",
+        "deployment_name": "@cf/google/embeddinggemma-300m",
+        "model_name": "embeddinggemma-300m",
+        "url": "https://developers.cloudflare.com/workers-ai/models/embeddinggemma-300m/",
+        "task": "emb",
+        "description": "Google's 300M-parameter embedding model producing 768-dimensional vectors, well-suited for multilingual semantic search, classification, and clustering; small size means fast inference but lower embedding quality than larger models.",
+        "context_window_tokens": 2048,
+        "max_output_tokens": null
+    },
+    {
+        "id": "speech-to-text",
+        "provider": "cf",
+        "deployment_name": "@cf/openai/whisper",
+        "model_name": "whisper",
+        "url": "https://developers.cloudflare.com/workers-ai/models/whisper/",
+        "task": "stt",
+        "description": "OpenAI Whisper on Cloudflare Workers AI. Transcribes audio to text.",
+        "context_window_tokens": null,
+        "max_output_tokens": null
+    }
+]

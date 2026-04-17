@@ -1,0 +1,13 @@
+[
+    {
+       "quick": true
+    },
+
+    {
+        "quick": false,
+        "character": {
+            "name": "Sherlock Holmes",
+            "description": "Brilliant, cold, analytical British detective. Middle-aged male."
+        }
+    }
+]
