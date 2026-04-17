@@ -43,6 +43,7 @@ class SubscriptionPlan(str, Enum):
     NONE = "none"
     BASIC = "basic"
     PREMIUM = "premium"
+    PUBLISHER = "publisher"
 
 
 class SubscriptionStatus(str, Enum):
@@ -176,6 +177,7 @@ class PaymentStatusResponse(BaseModel):
     amount_cents: int = Field(..., description="Amount in cents")
     currency: str = Field(..., description="Currency code")
     payment_method: PaymentMethod = Field(..., description="Payment method used")
+    metadata: Optional[dict] = Field(default=None, description="Associated payment metadata")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: Optional[datetime] = Field(default=None, description="Last update timestamp")
 
@@ -311,3 +313,25 @@ class RetentionOffer(BaseModel):
     original_price_cents: int = Field(..., description="Original price in cents")
     discounted_price_cents: int = Field(..., description="Discounted price in cents")
     message: str = Field(..., description="Offer message")
+
+
+class SubscriptionCatalogItemResponse(BaseModel):
+    """Response for a subscription plan in the pricing catalog"""
+    id: SubscriptionPlan = Field(..., description="Plan identifier")
+    name: str = Field(..., description="Display name")
+    description: str = Field(..., description="Plan description")
+    included_credit_type: str = Field(..., description="Credit type granted by the plan")
+    included_credits: int = Field(..., description="Credits granted per billing cycle")
+    monthly_amount_cents: int = Field(..., description="Monthly Stripe price in cents")
+    annual_amount_cents: int = Field(..., description="Annual Stripe price in cents")
+    features: List[str] = Field(..., description="Feature list")
+
+
+class CreditPackResponse(BaseModel):
+    """Response for a one-time credit pack"""
+    id: str = Field(..., description="Pack identifier")
+    name: str = Field(..., description="Display name")
+    description: str = Field(..., description="Pack description")
+    credit_type: str = Field(..., description="Type of credits granted")
+    credits: int = Field(..., description="Credits included")
+    amount_cents: int = Field(..., description="Price in cents")

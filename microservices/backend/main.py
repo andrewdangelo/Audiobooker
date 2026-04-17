@@ -28,6 +28,7 @@ from app.routers import (
     analytics, 
     admin
 )
+from app.routers.internal import router as internal_router
 from app.core.redis_manager import redis_manager
 
 __version__ = settings.TEST_VERSION
@@ -138,6 +139,13 @@ app.include_router(
     admin.router,
     prefix=settings.API_V1_PREFIX,
     tags=["Admin"]
+)
+
+# Include internal router (service-to-service only)
+app.include_router(
+    internal_router,
+    prefix=f"{settings.API_V1_PREFIX}/internal",
+    tags=["Internal (Service-to-Service)"]
 )
 
 

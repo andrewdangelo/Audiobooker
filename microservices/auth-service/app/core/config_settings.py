@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     
     # Environment
     ENVIRONMENT: str = Field(default="development", description="Environment: development, staging, production")
-    PORT: int = Field(default=8003, description="Service port")
+    PORT: int = Field(default=8001, description="Service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     DEBUG: bool = True
     TEST_VERSION: str = Field(default="1.0.0", description="Application version")
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     
     # CORS
     CORS_ORIGINS: List[str] = Field(
-        default=["http://localhost:3000", "http://localhost:8000"],
+        default=["http://localhost:5173", "http://localhost:3000", "http://localhost:8000"],
         description="Allowed CORS origins"
     )
     
@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     REDIS_HOST: str = Field(default="localhost", description="Redis host")
     REDIS_PORT: int = Field(default=6379, description="Redis port")
     REDIS_DB: int = Field(default=0, description="Redis database number")
+
+    # Internal service-to-service auth key (shared with payment service)
+    INTERNAL_SERVICE_KEY: str = Field(
+        default="change-me-internal-key",
+        description="Shared secret used to authenticate inter-service HTTP calls"
+    )
     
     class Config:
         env_file = ".env"

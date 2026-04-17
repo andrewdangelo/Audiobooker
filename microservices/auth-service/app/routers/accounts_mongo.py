@@ -9,7 +9,8 @@ from datetime import datetime
 
 from app.models.schemas import (
     UserResponse, UpdateAccountRequest, ChangePasswordRequest,
-    UpdateAccountSettingsRequest, AccountSettingsResponse
+    UpdateAccountSettingsRequest, AccountSettingsResponse,
+    ConsumeConversionCreditRequest,
 )
 from app.services.auth_service_mongo import AuthServiceMongo
 from app.database.mongodb import get_users_collection, get_account_settings_collection
@@ -198,6 +199,50 @@ async def delete_account(authorization: str = Header(None)):
     )
     
     return {"message": "Account deactivated successfully"}
+
+
+@router.post("/credits/consume-conversion")
+async def consume_conversion_credit(
+    request: ConsumeConversionCreditRequest,
+    authorization: str = Header(None),
+):
+    """Deduct one basic or premium credit for starting a conversion. Caller must be authenticated."""
+    user_id = await get_current_user_id(authorization)
+    users = get_users_collection()
+    oid = ObjectId(user_id)
+
+    if request.credit_type == "basic":
+        result = await users.update_one(
+            {"_id": oid, "basic_credits": {"$gte": 1}},
+            {"$inc": {"basic_credits": -1}, "$set": {"updated_at": datetime.utcnow()}},
+        )
+    else:
+        result = await users.update_one(
+            {"_id": oid, "premium_credits": {"$gte": 1}},
+            {"$inc": {"premium_credits": -1}, "$set": {"updated_at": datetime.utcnow()}},
+        )
+
+    if result.modified_count == 0:
+        user = await users.find_one({"_id": oid})
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        pool = "basic" if request.credit_type == "basic" else "premium"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Insufficient {pool} credits",
+        )
+
+    user = await users.find_one(
+        {"_id": oid},
+        {"credits": 1, "basic_credits": 1, "premium_credits": 1},
+    )
+    return {
+        "user_id": user_id,
+        "credits": user.get("credits", 0),
+        "basic_credits": user.get("basic_credits", 0),
+        "premium_credits": user.get("premium_credits", 0),
+        "total_credits": user.get("basic_credits", 0) + user.get("premium_credits", 0),
+    }
 
 
 @router.get("/credits")

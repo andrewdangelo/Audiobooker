@@ -18,9 +18,12 @@ async def health_check(request: Request):
     """Health check endpoint"""
     main_app =  f"{os.path.basename(os.getcwd())} Microservice"
     
+    now = datetime.now()
+    date_str = now.strftime("%m-%d-%Y")
+    time_str = now.strftime("%I:%M %p")
     return HealthResponse(
         status="healthy",
         service=main_app,
-        timestamp=f"{datetime.now().strftime("%m-%d-%Y")} at {datetime.now().strftime("%I:%M %p")}",
+        timestamp=f"{date_str} at {time_str}",
         version=request.app.__version__
     )

@@ -6,6 +6,8 @@
 # OS files
 .DS_Store
 Thumbs.db
+# Windows reserved name; sometimes created by bad `> nul` redirects in repo cwd
+nul
 
 # IDE
 .vscode/
@@ -52,3 +54,4 @@ wheels/
 .installed.cfg
 *.egg
 venv/
+.venv/

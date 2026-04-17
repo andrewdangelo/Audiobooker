@@ -4,8 +4,9 @@ Book Library and Store Endpoints
 
 __author__ = "Mohammad Saifan"
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import Optional
+from datetime import datetime
 import logging
 import uuid
 import math
@@ -22,8 +23,9 @@ from app.models.schemas import (
     BookUpdateRequest,
     StoreCatalogResponse,
     StoreBookBasic,
-    StoreBookDetailed, 
-    PurchaseResponse
+    StoreBookDetailed,
+    PremiumPurchaseRequest,
+    PremiumPurchaseResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,12 +66,14 @@ async def get_user_audiobooks(user_id: str = Query(..., description="User ID"), 
         if book:
             books.append(
                 BookBasic(
-                    id=book.get("_id"),
+                    id=str(book.get("id") or book.get("_id")),
                     title=book.get("title"),
                     author=book.get("author"),
                     duration=book.get("duration"),
                     cover_image_url=book.get("cover_image_url"),
-                    progress=item.get("progress", 0.0)
+                    progress=item.get("progress", 0.0),
+                    is_premium=book.get("is_premium", False),
+                    purchase_type=item.get("purchase_type", "basic"),
                 )
             )
     
@@ -92,11 +96,15 @@ async def get_audiobook_details(book_id: str, user_id: str = Query(..., descript
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
     
+    # Use the canonical UUID id stored in the book document (not the URL param
+    # which could be either a UUID or a MongoDB ObjectId string).
+    canonical_book_id = str(book.get("id") or book.get("_id"))
+
     # Get user's progress
     library_service = MongoDBService(db, Collections.USER_LIBRARY)
     library_item = library_service.find_one({
         "user_id": user_id,
-        "book_id": book_id
+        "book_id": canonical_book_id
     })
     
     progress = library_item.get("progress", 0.0) if library_item else 0.0
@@ -105,17 +113,22 @@ async def get_audiobook_details(book_id: str, user_id: str = Query(..., descript
     chapters = book.get("chapters", [])
     chapter_list = [
         ChapterInfo(
-            id=ch.get("_id"),
-            title=ch.get("title"),
-            start_time=ch.get("start_time"),
-            duration=ch.get("duration"),
+            id=ch.get("id") or ch.get("_id"),
+            title=ch.get("title", ""),
+            start_time=int(ch.get("start_time") or 0),
+            duration=int(ch.get("duration") or 0),
             chapter_number=ch.get("chapter_number")
         )
         for ch in chapters
     ]
-    
+
+    last_played_at = None
+    if library_item and library_item.get("last_played_at"):
+        lp = library_item["last_played_at"]
+        last_played_at = lp.isoformat() if hasattr(lp, "isoformat") else str(lp)
+
     return BookDetailed(
-        id=book.get("_id"),
+        id=canonical_book_id,
         title=book.get("title"),
         author=book.get("author"),
         narrator=book.get("narrator"),
@@ -124,7 +137,16 @@ async def get_audiobook_details(book_id: str, user_id: str = Query(..., descript
         cover_image_url=book.get("cover_image_url"),
         audio_url=book.get("audio_url"),
         progress=progress,
-        description=book.get("description")
+        description=book.get("description"),
+        synopsis=book.get("synopsis"),
+        genre=book.get("genre"),
+        categories=book.get("categories"),
+        published_year=book.get("published_year"),
+        rating=book.get("rating"),
+        review_count=book.get("review_count"),
+        last_played_at=last_played_at,
+        is_premium=book.get("is_premium", False),
+        purchase_type=library_item.get("purchase_type", "basic") if library_item else "basic",
     )
 
 
@@ -219,8 +241,10 @@ async def delete_audiobook(book_id: str, user_id: str = Query(..., description="
 # ============== Store Endpoints ==============
 
 @router.get("/store/catalog", response_model=StoreCatalogResponse)
-async def get_store_catalog(genre: Optional[str] = None, sort: str = Query("popular", regex="^(popular|recent|rating)$"), 
-                                    page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), db = Depends(get_db())):
+async def get_store_catalog(genre: Optional[str] = None, sort: str = Query("popular", regex="^(popular|recent|rating)$"),
+                                    page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100),
+                                    is_premium: Optional[bool] = Query(None, description="Filter by premium (True) or basic (False) books"),
+                                    db = Depends(get_db())):
     """Get all audiobooks available for purchase"""
     skip = (page - 1) * limit
     
@@ -228,6 +252,8 @@ async def get_store_catalog(genre: Optional[str] = None, sort: str = Query("popu
     filter_query = {"is_store_item": True}
     if genre:
         filter_query["genre"] = genre
+    if is_premium is not None:
+        filter_query["is_premium"] = is_premium
     
     book_service = MongoDBService(db, Collections.BOOKS)
     books = book_service.get_all(skip=skip, limit=limit, filter_query=filter_query)
@@ -251,7 +277,10 @@ async def get_store_catalog(genre: Optional[str] = None, sort: str = Query("popu
             credits=book.get("credits_required", 1),
             genre=book.get("genre"),
             rating=book.get("rating", 0.0),
-            cover_image_url=book.get("cover_image_url")
+            cover_image_url=book.get("cover_image_url"),
+            is_premium=book.get("is_premium", False),
+            premium_price=book.get("premium_price"),
+            premium_credits=book.get("premium_credits", 2),
         )
         for book in books
     ]
@@ -304,7 +333,10 @@ async def get_store_book_details(book_id: str, db = Depends(get_db())):
         rating=book.get("rating", 0.0),
         review_count=book.get("review_count", 0),
         sample_audio_url=book.get("sample_audio_url"),
-        cover_image_url=book.get("cover_image_url")
+        cover_image_url=book.get("cover_image_url"),
+        is_premium=book.get("is_premium", False),
+        premium_price=book.get("premium_price"),
+        premium_credits=book.get("premium_credits", 2),
     )
 
 
@@ -329,7 +361,10 @@ async def get_featured_books(db = Depends(get_db())):
             credits=book.get("credits_required", 1),
             genre=book.get("genre"),
             rating=book.get("rating", 0.0),
-            cover_image_url=book.get("cover_image_url")
+            cover_image_url=book.get("cover_image_url"),
+            is_premium=book.get("is_premium", False),
+            premium_price=book.get("premium_price"),
+            premium_credits=book.get("premium_credits", 2),
         )
         for book in books
     ]
@@ -362,7 +397,10 @@ async def get_new_releases(db = Depends(get_db())):
             credits=book.get("credits_required", 1),
             genre=book.get("genre"),
             rating=book.get("rating", 0.0),
-            cover_image_url=book.get("cover_image_url")
+            cover_image_url=book.get("cover_image_url"),
+            is_premium=book.get("is_premium", False),
+            premium_price=book.get("premium_price"),
+            premium_credits=book.get("premium_credits", 2),
         )
         for book in books
     ]
@@ -395,7 +433,10 @@ async def get_bestsellers(db = Depends(get_db())):
             credits=book.get("credits_required", 1),
             genre=book.get("genre"),
             rating=book.get("rating", 0.0),
-            cover_image_url=book.get("cover_image_url")
+            cover_image_url=book.get("cover_image_url"),
+            is_premium=book.get("is_premium", False),
+            premium_price=book.get("premium_price"),
+            premium_credits=book.get("premium_credits", 2),
         )
         for book in books
     ]
@@ -438,7 +479,10 @@ async def get_related_books(book_id: str, db = Depends(get_db())):
             credits=book.get("credits_required", 1),
             genre=book.get("genre"),
             rating=book.get("rating", 0.0),
-            cover_image_url=book.get("cover_image_url")
+            cover_image_url=book.get("cover_image_url"),
+            is_premium=book.get("is_premium", False),
+            premium_price=book.get("premium_price"),
+            premium_credits=book.get("premium_credits", 2),
         )
         for book in books
     ]
@@ -451,65 +495,58 @@ async def get_related_books(book_id: str, db = Depends(get_db())):
 
 
 @router.post("/store/purchase")
-async def purchase_book(user_id: str = Query(..., description="User ID"), purchase_data: PurchaseResponse = None, db = Depends(get_db())):
-    """Purchase a store audiobook"""
-    book_id = purchase_data.get("bookId")
-    payment_method = purchase_data.get("paymentMethod")
-    
-    # Get the book
+async def purchase_book(
+    user_id: str = Query(..., description="User ID"),
+    purchase_data: dict = Body(...),
+    db = Depends(get_db())
+):
+    """
+    Add a purchased book to the user's library.
+
+    Payment (credits or card) is assumed to have already been processed by the
+    payment service before this endpoint is called. This endpoint is only
+    responsible for library fulfillment.
+    """
+    book_id = purchase_data.get("book_id")
+
+    if not book_id:
+        raise HTTPException(status_code=400, detail="book_id is required")
+
+    # Look up the book
     book_service = MongoDBService(db, Collections.BOOKS)
-    book = book_service.find_one({
-        "user_id": user_id,
-    })
-    
+    book = book_service.get_by_id(book_id)
+
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
-    
-    # Check if user already owns it
+
+    # Idempotent – if the user already owns it, just return success
     library_service = MongoDBService(db, Collections.USER_LIBRARY)
-    existing = library_service.find_one({
-        "user_id": user_id,
-        "book_id": book_id
-    })
-    
+    existing = library_service.find_one({"user_id": user_id, "book_id": book_id})
+
     if existing:
-        raise HTTPException(status_code=400, detail="You already own this book")
-    
-    # Handle payment based on method
-    if payment_method == "credits":
-        # Check user credits
-        credits_service = MongoDBService(db, Collections.USER_CREDITS)
-        user_credits = credits_service.find_one({"user_id": user_id})
-        
-        if not user_credits or user_credits.get("credits", 0) < book.get("credits_required", 1):
-            raise HTTPException(status_code=400, detail="Insufficient credits")
-        
-        # Deduct credits
-        new_credits = user_credits.get("credits") - book.get("credits_required", 1)
-        new_credits_used = user_credits.get("credits_used", 0) + book.get("credits_required", 1)
-        credits_service.update(user_credits.get("_id"), {
-            "credits": new_credits,
-            "credits_used": new_credits_used
-        })
-    
+        logger.info(f"User {user_id} already owns book {book_id} – skipping duplicate")
+        return {"success": True, "bookId": book_id, "message": "Already owned"}
+
     # Add to user's library
     library_data = {
         "user_id": user_id,
         "book_id": book_id,
-        "progress": 0.0
+        "progress": 0.0,
+        "added_at": datetime.utcnow(),
+        "purchase_type": purchase_data.get("purchase_type", "basic"),
     }
     library_service.create(library_data)
-    
+
     # Log activity
     activity_service = MongoDBService(db, Collections.USER_ACTIVITY)
     activity_data = {
         "user_id": user_id,
         "activity_type": "purchased",
         "book_id": book_id,
-        "title": book.get("title")
+        "title": book.get("title"),
     }
     activity_service.create(activity_data)
-    
-    logger.info(f"Book purchased: {book_id} by user {user_id}")
-    
+
+    logger.info(f"Book {book_id} added to library for user {user_id}")
+
     return {"success": True, "bookId": book_id, "message": "Purchase successful"}

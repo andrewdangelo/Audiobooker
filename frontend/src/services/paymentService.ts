@@ -23,7 +23,8 @@ export interface PaymentCartItem {
 
 export interface PaymentIntentRequest {
   user_id: string
-  amount: number  // in cents
+  items?: PaymentCartItem[]
+  amount?: number  // in cents
   currency?: string
   metadata?: Record<string, string>
 }
@@ -55,7 +56,8 @@ export interface CheckoutSessionResponse {
 
 export interface CreditsPaymentRequest {
   user_id: string
-  amount: number  // in cents equivalent
+  items?: PaymentCartItem[]
+  amount?: number  // in cents equivalent
   currency?: string
   metadata?: Record<string, string>
 }
@@ -71,11 +73,14 @@ export interface CreditsPaymentResponse {
 
 export interface PaymentStatusResponse {
   payment_id: string
+  stripe_payment_intent_id?: string | null
   status: string
   amount_cents: number
   currency: string
   payment_method: string
+  metadata?: Record<string, string> | null
   created_at: string
+  updated_at?: string | null
 }
 
 export interface PublishableKeyResponse {
@@ -103,6 +108,26 @@ export interface OrderResponse {
   status: string
   payment_method: string
   created_at: string
+}
+
+export interface SubscriptionCatalogItem {
+  id: 'basic' | 'premium' | 'publisher'
+  name: string
+  description: string
+  included_credit_type: 'basic' | 'premium'
+  included_credits: number
+  monthly_amount_cents: number
+  annual_amount_cents: number
+  features: string[]
+}
+
+export interface CreditPackResponse {
+  id: string
+  name: string
+  description: string
+  credit_type: 'basic' | 'premium'
+  credits: number
+  amount_cents: number
 }
 
 // ============================================================================
@@ -137,12 +162,26 @@ export const paymentService = {
       `${PAYMENT_BASE}/create-payment-intent`,
       {
         user_id: request.user_id,
+        items: request.items,
         amount: request.amount,
         currency: request.currency || 'usd',
         payment_method: 'card',
         metadata: request.metadata,
       }
     )
+    return response.data
+  },
+
+  /**
+   * Synchronously grant credits after a Stripe payment intent succeeds.
+   * Call this immediately after Stripe.js confirms the payment so that
+   * the DB is updated before the success page fetches the user profile.
+   * Idempotent — safe to call multiple times for the same payment intent.
+   */
+  async completeCreditPurchase(paymentIntentId: string): Promise<{ status: string; credits_added: number; credit_type: string }> {
+    const response = await api.post(`${PAYMENT_BASE}/complete-credit-purchase`, {
+      payment_intent_id: paymentIntentId,
+    })
     return response.data
   },
 
@@ -170,6 +209,7 @@ export const paymentService = {
       `${PAYMENT_BASE}/pay-with-credits`,
       {
         user_id: request.user_id,
+        items: request.items,
         amount: request.amount,
         currency: request.currency || 'usd',
         metadata: request.metadata,
@@ -222,6 +262,30 @@ export const paymentService = {
     currency: string
   }> {
     const response = await api.get(`${PAYMENT_BASE}/checkout-session/${sessionId}`)
+    return response.data
+  },
+
+  async getSubscriptionPlans(): Promise<SubscriptionCatalogItem[]> {
+    const response = await api.get<SubscriptionCatalogItem[]>(
+      `${PAYMENT_BASE}/subscription/pricing/plans`
+    )
+    return response.data
+  },
+
+  async getCreditPacks(creditType?: 'basic' | 'premium'): Promise<CreditPackResponse[]> {
+    const response = await api.get<CreditPackResponse[]>(
+      `${PAYMENT_BASE}/subscription/pricing/credit-packs`,
+      {
+        params: creditType ? { credit_type: creditType } : undefined,
+      }
+    )
+    return response.data
+  },
+
+  async getCreditPack(packId: string): Promise<CreditPackResponse> {
+    const response = await api.get<CreditPackResponse>(
+      `${PAYMENT_BASE}/subscription/pricing/credit-packs/${packId}`
+    )
     return response.data
   },
 }

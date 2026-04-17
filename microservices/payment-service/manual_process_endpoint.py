@@ -15,6 +15,7 @@ async def manually_process_payment(payment_id: str):
     """Manually process a payment and add credits (for testing when webhooks don't fire)"""
     try:
         from app.database.mongodb import MongoDB
+        from app.services import service_client
         
         # Get payment
         payment = await MongoDB.get_db().payments.find_one({"_id": ObjectId(payment_id)})
@@ -41,19 +42,13 @@ async def manually_process_payment(payment_id: str):
         # Determine which credit field to update
         credit_field = "premium_credits" if credit_type == "premium" else "basic_credits"
         
-        # Add credits to user
-        result = await MongoDB.get_auth_db().users.update_one(
-            {"_id": ObjectId(user_id)},
-            {
-                "$inc": {
-                    credit_field: credits_to_add,
-                    "credits": credits_to_add  # Legacy total
-                },
-                "$set": {"updated_at": datetime.utcnow()}
-            }
-        )
-        
-        if result.modified_count > 0:
+        # Add credits to user via auth-service API
+        updated = await service_client.update_user_credits(user_id, {
+            credit_field: credits_to_add,
+            "credits": credits_to_add,  # Legacy total
+        })
+
+        if updated:
             logger.info(f"Manually added {credits_to_add} {credit_type} credits to user {user_id}")
             return {
                 "status": "success",

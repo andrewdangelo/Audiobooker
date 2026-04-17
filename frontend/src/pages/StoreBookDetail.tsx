@@ -49,21 +49,39 @@ import {
   ChevronUp,
   Volume2,
   CheckCircle2,
+  Loader2,
+  AlertTriangle,
+  Crown,
+  Sparkles,
+  Users,
+  Info,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { AddToCartModal } from '@/components/cart/AddToCartModal'
 import { CartSidebar } from '@/components/cart/CartSidebar'
 import { useAppDispatch, useAppSelector } from '@/store/hooks'
+import { clearCache } from '@/store/slices/audiobooksSlice'
 import { 
   fetchStoreBookDetails,
   purchaseBook,
+  purchasePremiumBook,
   selectStoreBookById,
   selectUserCredits,
+  selectUserPremiumCredits,
   selectStoreBooksLoading,
 } from '@/store/slices/storeSlice'
 import type { StoreBook } from '@/store/slices/storeSlice'
@@ -256,6 +274,192 @@ function SamplePlayer({
 }
 
 /**
+ * Edition Selector
+ * Renders a tab bar to switch between the Standard and Theatrical editions
+ * of a premium book.
+ */
+function EditionSelector({
+  selectedEdition,
+  onChange,
+  premiumPrice,
+  basicPrice,
+}: {
+  selectedEdition: 'basic' | 'premium'
+  onChange: (edition: 'basic' | 'premium') => void
+  premiumPrice?: number
+  basicPrice: number
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Edition</p>
+      <Tabs value={selectedEdition} onValueChange={(v) => onChange(v as 'basic' | 'premium')}>
+        <TabsList className="grid w-full grid-cols-2 h-auto p-1">
+          <TabsTrigger value="basic" className="flex flex-col gap-0.5 py-2 px-3 h-auto">
+            <span className="text-sm font-medium">Standard</span>
+            <span className="text-xs text-muted-foreground">{formatPrice(basicPrice)}</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="premium"
+            className={cn(
+              "flex flex-col gap-0.5 py-2 px-3 h-auto",
+              selectedEdition === 'premium' && "data-[state=active]:bg-amber-500/15 data-[state=active]:text-amber-700"
+            )}
+          >
+            <span className="flex items-center gap-1 text-sm font-medium">
+              <Crown className="h-3 w-3" />
+              Theatrical
+            </span>
+            <span className="text-xs">
+              {premiumPrice ? formatPrice(premiumPrice) : 'Premium'}
+            </span>
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+    </div>
+  )
+}
+
+/**
+ * Theatrical Edition Info Panel
+ * Explains full-cast production and shows character/voice assignments.
+ */
+function TheatricalEditionPanel({
+  book,
+}: {
+  book: StoreBook
+}) {
+  const [samplesExpanded, setSamplesExpanded] = useState(false)
+
+  // Extract character voice names from chapter titles (pattern: "Voice of X" or "Voice N: X")
+  const castFromChapters: string[] = []
+  if (book.chapters) {
+    book.chapters.forEach(ch => {
+      const matchNamed = ch.title.match(/Voice of ([^\u2014]+)/i)
+      const matchNumbered = ch.title.match(/Voice (?:One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|\d+):\s*(.+)/i)
+      if (matchNamed) castFromChapters.push(matchNamed[1].trim())
+      if (matchNumbered) castFromChapters.push(matchNumbered[1].trim())
+    })
+  }
+
+  // Use backend characters if provided, otherwise fall back to chapter derivation
+  const hasCast = (book.characters && book.characters.length > 0) || castFromChapters.length > 0
+  const characters: Array<{ name: string; role?: string; voiceActor?: string; sampleAudioUrl?: string }> =
+    book.characters && book.characters.length > 0
+      ? book.characters
+      : castFromChapters.map(name => ({ name, voiceActor: 'Dedicated AI Voice' }))
+
+  return (
+    <div className="space-y-4 rounded-xl border border-amber-400/30 bg-amber-500/5 p-5">
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <div className="rounded-lg bg-amber-500/15 p-2 flex-shrink-0">
+          <Crown className="h-5 w-5 text-amber-600" />
+        </div>
+        <div>
+          <h3 className="font-semibold text-amber-800 dark:text-amber-400">Theatrical Edition</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Full-cast production — every major character is voiced by a dedicated AI performer.
+          </p>
+        </div>
+      </div>
+
+      {/* Feature bullets */}
+      <div className="grid sm:grid-cols-2 gap-2">
+        {[
+          { icon: Users, text: 'Per-character dedicated voices' },
+          { icon: Sparkles, text: 'Immersive theatrical delivery' },
+          { icon: Mic2, text: 'Distinct tone & cadence per role' },
+          { icon: Volume2, text: 'Cinematic sound design' },
+        ].map(({ icon: Icon, text }) => (
+          <div key={text} className="flex items-center gap-2 text-sm">
+            <Icon className="h-4 w-4 text-amber-600 flex-shrink-0" />
+            <span>{text}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Character cast list */}
+      {hasCast && (
+        <>
+          <Separator className="border-amber-400/20" />
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-semibold flex items-center gap-1.5">
+                <Users className="h-4 w-4 text-amber-600" />
+                Full Cast ({characters.length} voices)
+              </h4>
+              {characters.length > 4 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-amber-700"
+                  onClick={() => setSamplesExpanded(!samplesExpanded)}
+                >
+                  {samplesExpanded ? 'Show less' : `Show all ${characters.length}`}
+                  {samplesExpanded
+                    ? <ChevronUp className="h-3 w-3 ml-1" />
+                    : <ChevronDown className="h-3 w-3 ml-1" />}
+                </Button>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              {(samplesExpanded ? characters : characters.slice(0, 4)).map((char, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between gap-3 rounded-lg bg-background/60 px-3 py-2 text-sm"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-xs font-bold text-amber-700">
+                      {i + 1}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{char.name}</p>
+                      {char.role && (
+                        <p className="text-xs text-muted-foreground truncate">{char.role}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-xs text-muted-foreground hidden sm:block">
+                      {char.voiceActor ?? 'Dedicated AI Voice'}
+                    </span>
+                    {char.sampleAudioUrl ? (
+                      <SamplePlayer
+                        sampleUrl={char.sampleAudioUrl}
+                        bookTitle={char.name}
+                      />
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs opacity-50 cursor-not-allowed"
+                        disabled
+                      >
+                        <Volume2 className="h-3 w-3 mr-1" />
+                        Sample
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Narrator line */}
+      {book.narrator && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1">
+          <Info className="h-3 w-3 flex-shrink-0" />
+          <span>Narrated by <span className="font-medium">{book.narrator}</span> with full ensemble cast</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * Purchase Button Section
  * 
  * TODO: API INTEGRATION
@@ -267,6 +471,8 @@ function SamplePlayer({
 function PurchaseSection({ 
   book, 
   userCredits,
+  userPremiumCredits,
+  edition,
   onPurchaseWithCredits,
   onPurchaseWithCard,
   onAddToCart,
@@ -274,36 +480,61 @@ function PurchaseSection({
 }: { 
   book: StoreBook
   userCredits: number
+  userPremiumCredits: number
+  edition: 'basic' | 'premium'
   onPurchaseWithCredits: () => void
   onPurchaseWithCard: () => void
   onAddToCart: () => void
   isPurchasing: boolean
 }) {
-  const hasEnoughCredits = userCredits >= book.credits
-  const discount = book.originalPrice 
+  const isPremiumEdition = edition === 'premium' && book.isPremium
+  const effectivePrice = isPremiumEdition && book.premiumPrice ? book.premiumPrice : book.price
+  const effectiveCredits = isPremiumEdition ? book.premiumCredits : book.credits
+
+  // Premium editions require premium credits; basic editions use basic credits.
+  const availableCredits = isPremiumEdition ? userPremiumCredits : userCredits
+  const hasEnoughCredits = availableCredits >= effectiveCredits
+  const creditLabel = isPremiumEdition ? 'Premium Credit' : 'Credit'
+
+  const discount = !isPremiumEdition && book.originalPrice 
     ? Math.round((1 - book.price / book.originalPrice) * 100) 
     : 0
 
+  const borderClass = isPremiumEdition
+    ? 'border-2 border-amber-400/40 bg-gradient-to-br from-amber-500/8 to-transparent'
+    : 'border-2 border-primary/20 bg-gradient-to-br from-primary/5 to-transparent'
+
   return (
-    <Card className="border-2 border-primary/20 bg-gradient-to-br from-primary/5 to-transparent">
+    <Card className={borderClass}>
       <CardContent className="p-6 space-y-4">
+        {/* Edition label for premium */}
+        {isPremiumEdition && (
+          <div className="flex items-center justify-center gap-1.5 text-amber-700 dark:text-amber-400">
+            <Crown className="h-4 w-4" />
+            <span className="text-sm font-semibold">Theatrical Edition</span>
+          </div>
+        )}
+
         {/* Price Display */}
         <div className="text-center">
-          {book.isOnSale && book.originalPrice && (
+          {!isPremiumEdition && book.isOnSale && book.originalPrice && (
             <div className="flex items-center justify-center gap-2 mb-1">
               <span className="text-lg text-muted-foreground line-through">
                 {formatPrice(book.originalPrice)}
               </span>
-              <Badge variant="destructive" size="sm">
+              <Badge variant="destructive">
                 {discount}% OFF
               </Badge>
             </div>
           )}
-          <div className="text-4xl font-bold text-primary">
-            {formatPrice(book.price)}
+          <div className={cn(
+            "text-4xl font-bold",
+            isPremiumEdition ? "text-amber-600 dark:text-amber-400" : "text-primary"
+          )}>
+            {formatPrice(effectivePrice)}
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            or {book.credits} credit{book.credits > 1 ? 's' : ''}
+            or {effectiveCredits} {isPremiumEdition ? 'premium ' : ''}credit{effectiveCredits > 1 ? 's' : ''}
           </p>
         </div>
 
@@ -314,11 +545,16 @@ function PurchaseSection({
           {/* Add to Cart - Primary CTA */}
           <Button
             size="lg"
-            className="w-full h-14 text-lg font-semibold"
+            className={cn(
+              "w-full h-14 text-lg font-semibold",
+              isPremiumEdition && "bg-amber-600 hover:bg-amber-700 text-white"
+            )}
             onClick={onAddToCart}
             disabled={isPurchasing}
           >
-            <ShoppingCart className="h-5 w-5 mr-2" />
+            {isPremiumEdition
+              ? <Crown className="h-5 w-5 mr-2" />
+              : <ShoppingCart className="h-5 w-5 mr-2" />}
             Add to Cart
           </Button>
 
@@ -326,7 +562,10 @@ function PurchaseSection({
           <Button
             variant="outline"
             size="lg"
-            className="w-full h-12"
+            className={cn(
+              "w-full h-12",
+              isPremiumEdition && "border-amber-400/50 hover:bg-amber-500/10"
+            )}
             onClick={onPurchaseWithCredits}
             disabled={!hasEnoughCredits || isPurchasing}
           >
@@ -335,15 +574,17 @@ function PurchaseSection({
             ) : (
               <>
                 <CreditCard className="h-4 w-4 mr-2" />
-                Buy Now with {book.credits} Credit{book.credits > 1 ? 's' : ''}
+                Buy with {effectiveCredits} {creditLabel}{effectiveCredits > 1 ? 's' : ''}
               </>
             )}
           </Button>
 
           {!hasEnoughCredits && (
             <p className="text-xs text-center text-destructive">
-              You have {userCredits} credit{userCredits !== 1 ? 's' : ''}. 
-              <Link to="/credits" className="underline ml-1">Get more credits</Link>
+              You have {availableCredits} {isPremiumEdition ? 'premium ' : ''}credit{availableCredits !== 1 ? 's' : ''}.
+              {' '}<Link to="/credits" className="underline">
+                {isPremiumEdition ? 'Get premium credits' : 'Get more credits'}
+              </Link>
             </p>
           )}
 
@@ -355,7 +596,7 @@ function PurchaseSection({
             onClick={onPurchaseWithCard}
             disabled={isPurchasing}
           >
-            Or pay {formatPrice(book.price)} with card
+            Or pay {formatPrice(effectivePrice)} with card
           </Button>
         </div>
 
@@ -489,6 +730,7 @@ export default function StoreBookDetail() {
   // Redux state
   const book = useAppSelector((state) => selectStoreBookById(state, id || ''))
   const userCredits = useAppSelector(selectUserCredits)
+  const userPremiumCredits = useAppSelector(selectUserPremiumCredits)
   const loading = useAppSelector(selectStoreBooksLoading)
   
   // Local state
@@ -496,6 +738,15 @@ export default function StoreBookDetail() {
   const [showAllChapters, setShowAllChapters] = useState(false)
   const [showAddToCartModal, setShowAddToCartModal] = useState(false)
   const [showCartSidebar, setShowCartSidebar] = useState(false)
+  const [showCreditConfirm, setShowCreditConfirm] = useState(false)
+  const [showCardConfirm, setShowCardConfirm] = useState(false)
+  // Which edition the user has selected (only relevant for premium books)
+  const [selectedEdition, setSelectedEdition] = useState<'basic' | 'premium'>('basic')
+
+  // Derived pricing for the active edition
+  const isPremiumEdition = selectedEdition === 'premium' && !!book?.isPremium
+  const effectivePrice = isPremiumEdition && book?.premiumPrice ? book.premiumPrice : (book?.price ?? 0)
+  const effectiveCredits = isPremiumEdition ? (book?.premiumCredits ?? 2) : (book?.credits ?? 1)
 
   /**
    * Fetch book details on mount
@@ -510,27 +761,30 @@ export default function StoreBookDetail() {
     }
   }, [id, dispatch])
 
-  /**
-   * Handle purchase with credits
-   * 
-   * TODO: API INTEGRATION
-   * - Call purchase API endpoint
-   * - Deduct credits from user account
-   * - Add book to user's library
-   * - Show success notification
-   * - Redirect to library or book player
-   */
-  const handlePurchaseWithCredits = async () => {
+  /** Open the credits confirmation dialog */
+  const handlePurchaseWithCredits = () => {
+    if (!book) return
+    setShowCreditConfirm(true)
+  }
+
+  /** Execute the confirmed credits purchase */
+  const handleConfirmCreditPurchase = async () => {
     if (!book) return
     
     setIsPurchasing(true)
     try {
-      await dispatch(purchaseBook({ bookId: book.id, useCredits: true })).unwrap()
-      // TODO: Show success toast
-      // TODO: Navigate to library or start playing
+      if (isPremiumEdition) {
+        await dispatch(purchasePremiumBook({
+          bookId: book.id,
+          paymentMethod: 'premium_credits',
+        })).unwrap()
+      } else {
+        await dispatch(purchaseBook({ bookId: book.id, useCredits: true })).unwrap()
+      }
+      dispatch(clearCache())
+      setShowCreditConfirm(false)
       navigate('/library')
     } catch (error) {
-      // TODO: Show error toast
       console.error('Purchase failed:', error)
     } finally {
       setIsPurchasing(false)
@@ -539,26 +793,36 @@ export default function StoreBookDetail() {
 
   /**
    * Handle purchase with credit card
-   * 
-   * TODO: API INTEGRATION
-   * - Open payment modal/redirect to payment page
-   * - Process payment via Stripe/payment processor
-   * - Add book to user's library on success
-   * - Handle payment failures gracefully
+   * Opens a confirmation dialog before navigating to checkout in direct mode.
    */
   const handlePurchaseWithCard = async () => {
     if (!book) return
-    
-    setIsPurchasing(true)
-    try {
-      // TODO: Open payment modal or redirect to checkout
-      await dispatch(purchaseBook({ bookId: book.id, useCredits: false })).unwrap()
-      navigate('/library')
-    } catch (error) {
-      console.error('Purchase failed:', error)
-    } finally {
-      setIsPurchasing(false)
-    }
+    setShowCardConfirm(true)
+  }
+
+  /**
+   * Confirm direct card purchase — navigate to /checkout with direct-mode route state.
+   * Does NOT mutate the existing cart.
+   */
+  const handleConfirmCardPurchase = () => {
+    if (!book) return
+    setShowCardConfirm(false)
+    navigate('/checkout', {
+      state: {
+        mode: 'direct',
+        source: 'store-book-detail',
+        item: {
+          bookId: book.id,
+          title: book.title,
+          author: book.author,
+          coverImage: book.coverImage,
+          price: effectivePrice,
+          credits: effectiveCredits,
+          edition: isPremiumEdition ? 'premium' : 'basic',
+          quantity: 1,
+        },
+      },
+    })
   }
 
   // Loading state
@@ -599,8 +863,10 @@ export default function StoreBookDetail() {
     )
   }
 
-  // Prepare chapter data (use mock for demo)
-  const chapters = mockChapters
+  // Prepare chapter data — use real chapters from the book, fall back to mock
+  const chapters = (book.chapters && book.chapters.length > 0)
+    ? book.chapters.map((ch, i) => ({ id: ch.id || `ch-${i}`, title: ch.title, duration: ch.duration }))
+    : mockChapters
   const visibleChapters = showAllChapters ? chapters : chapters.slice(0, 5)
 
   return (
@@ -616,13 +882,13 @@ export default function StoreBookDetail() {
       </Button>
 
       {/* Main Content Grid */}
-      <div className="grid lg:grid-cols-[350px_1fr_320px] gap-8">
+      <div className="grid lg:grid-cols-[350px_1fr_320px] gap-8 lg:gap-8">
         {/* ============================================================== */}
         {/* LEFT COLUMN - Book Cover & Sample */}
         {/* ============================================================== */}
-        <div className="space-y-6">
+        <div className="order-1 lg:order-none space-y-6">
           {/* Book Cover */}
-          <div className="relative">
+          <div className="relative max-w-[280px] mx-auto lg:max-w-none">
             <div className="aspect-[3/4] rounded-xl overflow-hidden shadow-2xl bg-gradient-to-br from-primary/20 to-primary/40">
               {book.coverImage ? (
                 <img
@@ -675,7 +941,7 @@ export default function StoreBookDetail() {
         {/* ============================================================== */}
         {/* CENTER COLUMN - Book Details */}
         {/* ============================================================== */}
-        <div className="space-y-8">
+        <div className="order-3 lg:order-none space-y-8">
           {/* Genre Badge */}
           <div className="flex flex-wrap gap-2">
             <Badge variant="secondary" className="text-sm">
@@ -686,11 +952,17 @@ export default function StoreBookDetail() {
                 {book.series} #{book.seriesNumber}
               </Badge>
             )}
+            {book.isPremium && (
+              <Badge className="bg-amber-500/15 text-amber-700 border-amber-400/40 hover:bg-amber-500/20 text-sm">
+                <Crown className="h-3 w-3 mr-1" />
+                Theatrical Edition Available
+              </Badge>
+            )}
           </div>
 
           {/* Title & Author */}
           <div>
-            <h1 className="text-3xl lg:text-4xl font-bold mb-2">{book.title}</h1>
+            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold mb-2">{book.title}</h1>
             <p className="text-xl text-muted-foreground">
               by <span className="text-foreground font-medium">{book.author}</span>
             </p>
@@ -704,7 +976,7 @@ export default function StoreBookDetail() {
           />
 
           {/* Key Metadata */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             <MetaItem 
               icon={Clock} 
               label="Length" 
@@ -741,6 +1013,14 @@ export default function StoreBookDetail() {
 
           {/* Synopsis */}
           <Synopsis description={book.description} />
+
+          {/* Theatrical Edition Panel — shown when Theatrical tab is active */}
+          {book.isPremium && selectedEdition === 'premium' && (
+            <>
+              <Separator />
+              <TheatricalEditionPanel book={book} />
+            </>
+          )}
 
           <Separator />
 
@@ -810,11 +1090,23 @@ export default function StoreBookDetail() {
         {/* ============================================================== */}
         {/* RIGHT COLUMN - Purchase Section (Sticky) */}
         {/* ============================================================== */}
-        <div className="lg:sticky lg:top-8 h-fit space-y-6">
+        <div className="order-2 lg:order-none lg:sticky lg:top-8 h-fit space-y-6">
+          {/* Edition Selector — only shown for books with a premium edition */}
+          {book.isPremium && (
+            <EditionSelector
+              selectedEdition={selectedEdition}
+              onChange={setSelectedEdition}
+              basicPrice={book.price}
+              premiumPrice={book.premiumPrice}
+            />
+          )}
+
           {/* Purchase Card */}
           <PurchaseSection
             book={book}
             userCredits={userCredits}
+            userPremiumCredits={userPremiumCredits}
+            edition={selectedEdition}
             onPurchaseWithCredits={handlePurchaseWithCredits}
             onPurchaseWithCard={handlePurchaseWithCard}
             onAddToCart={() => setShowAddToCartModal(true)}
@@ -823,18 +1115,30 @@ export default function StoreBookDetail() {
 
           {/* User Credits Info */}
           <Card>
-            <CardContent className="p-4">
+            <CardContent className="p-4 space-y-3">
+              {/* Basic credits */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <CreditCard className="h-5 w-5 text-primary" />
-                  <span className="font-medium">Your Credits</span>
+                  <span className="font-medium text-sm">Credits</span>
                 </div>
-                <span className="text-2xl font-bold">{userCredits}</span>
+                <span className="text-xl font-bold">{userCredits}</span>
               </div>
+              {/* Premium credits */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Crown className="h-5 w-5 text-amber-600" />
+                  <span className="font-medium text-sm">Premium Credits</span>
+                </div>
+                <span className="text-xl font-bold text-amber-600">{userPremiumCredits}</span>
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Premium credits are required for theatrical edition purchases.
+              </p>
               <Button 
                 variant="link" 
                 size="sm" 
-                className="w-full mt-2 text-primary"
+                className="w-full mt-1 text-primary p-0 h-auto"
                 asChild
               >
                 <Link to="/credits">Get More Credits</Link>
@@ -851,12 +1155,116 @@ export default function StoreBookDetail() {
         </div>
       </div>
       
+      {/* Credits Purchase Confirmation Dialog */}
+      <Dialog open={showCreditConfirm} onOpenChange={(open) => { if (!open && !isPurchasing) setShowCreditConfirm(false) }}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {isPremiumEdition
+                ? <Crown className="h-5 w-5 text-amber-600" />
+                : <CreditCard className="h-5 w-5 text-primary" />}
+              Confirm Purchase with Credits
+            </DialogTitle>
+            <DialogDescription>Review your purchase before confirming</DialogDescription>
+          </DialogHeader>
+
+          {book && (
+            <div className="py-4 space-y-4">
+              {/* Book preview */}
+              <div className="flex gap-4">
+                <div className="w-16 h-20 rounded-md overflow-hidden flex-shrink-0 bg-muted">
+                  {book.coverImage && (
+                    <img src={book.coverImage} alt={book.title} className="w-full h-full object-cover" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold leading-tight">{book.title}</p>
+                  <p className="text-sm text-muted-foreground">{book.author}</p>
+                  {isPremiumEdition && (
+                    <Badge className="mt-1 bg-amber-500/15 text-amber-700 border-amber-400/40 text-xs">
+                      <Crown className="h-3 w-3 mr-1" />Theatrical Edition
+                    </Badge>
+                  )}
+                </div>
+              </div>
+
+              {/* Cost summary */}
+              <div className="rounded-lg bg-muted/50 p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Purchase price</span>
+                  <span className={cn("font-medium flex items-center gap-1", isPremiumEdition && "text-amber-700")}>
+                    {isPremiumEdition
+                      ? <Crown className="h-3.5 w-3.5 text-amber-600" />
+                      : <CreditCard className="h-3.5 w-3.5 text-primary" />}
+                    {effectiveCredits} {isPremiumEdition ? 'Premium Credit' : 'Credit'}{effectiveCredits !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Your balance</span>
+                  <span className={cn(
+                    "font-medium",
+                    (isPremiumEdition ? userPremiumCredits : userCredits) < effectiveCredits
+                      ? "text-destructive"
+                      : "text-foreground"
+                  )}>
+                    {isPremiumEdition ? userPremiumCredits : userCredits}{' '}
+                    {isPremiumEdition ? 'Premium Credit' : 'Credit'}{(isPremiumEdition ? userPremiumCredits : userCredits) !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <div className="border-t pt-2 flex justify-between font-medium">
+                  <span>Balance after purchase</span>
+                  <span className={cn(
+                    (isPremiumEdition ? userPremiumCredits : userCredits) - effectiveCredits < 0
+                      ? "text-destructive"
+                      : isPremiumEdition ? "text-amber-600" : "text-primary"
+                  )}>
+                    {(isPremiumEdition ? userPremiumCredits : userCredits) - effectiveCredits}{' '}
+                    {isPremiumEdition ? 'Premium Credit' : 'Credit'}{((isPremiumEdition ? userPremiumCredits : userCredits) - effectiveCredits) !== 1 ? 's' : ''}
+                  </span>
+                </div>
+              </div>
+
+              {(isPremiumEdition ? userPremiumCredits : userCredits) < effectiveCredits && (
+                <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm">
+                  <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                  <span>
+                    {isPremiumEdition
+                      ? "You don't have enough premium credits for this purchase. Premium credits are required for theatrical editions."
+                      : "You don't have enough credits for this purchase."}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowCreditConfirm(false)} disabled={isPurchasing}>
+              Cancel
+            </Button>
+            <Button
+              className={cn(isPremiumEdition && "bg-amber-600 hover:bg-amber-700")}
+              onClick={handleConfirmCreditPurchase}
+              disabled={isPurchasing || (book
+                ? (isPremiumEdition ? userPremiumCredits : userCredits) < effectiveCredits
+                : false)}
+            >
+              {isPurchasing ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Purchasing…</>
+              ) : (
+                <><CreditCard className="h-4 w-4 mr-2" /> Confirm Purchase</>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Add to Cart Modal */}
       <AddToCartModal
         book={book}
         isOpen={showAddToCartModal}
         onClose={() => setShowAddToCartModal(false)}
         onOpenCart={() => setShowCartSidebar(true)}
+        edition={selectedEdition}
       />
       
       {/* Cart Sidebar */}
@@ -864,6 +1272,80 @@ export default function StoreBookDetail() {
         isOpen={showCartSidebar}
         onClose={() => setShowCartSidebar(false)}
       />
+
+      {/* Card Purchase Confirmation Dialog */}
+      <Dialog open={showCardConfirm} onOpenChange={(open) => { if (!open) setShowCardConfirm(false) }}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CreditCard className="h-5 w-5 text-primary" />
+              Confirm Card Purchase
+            </DialogTitle>
+            <DialogDescription>Review your purchase before proceeding to payment</DialogDescription>
+          </DialogHeader>
+
+          {book && (
+            <div className="py-4 space-y-4">
+              <div className="flex gap-4">
+                <div className="w-16 h-20 rounded-md overflow-hidden flex-shrink-0 bg-muted">
+                  {book.coverImage && (
+                    <img src={book.coverImage} alt={book.title} className="w-full h-full object-cover" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold leading-tight">{book.title}</p>
+                  <p className="text-sm text-muted-foreground">{book.author}</p>
+                  {isPremiumEdition && (
+                    <Badge className="mt-1 bg-amber-500/15 text-amber-700 border-amber-400/40 text-xs">
+                      <Crown className="h-3 w-3 mr-1" />Theatrical Edition
+                    </Badge>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-muted/50 p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Edition</span>
+                  <span className="font-medium">
+                    {isPremiumEdition ? 'Theatrical (Full Cast)' : 'Standard'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Price</span>
+                  <span className={cn(
+                    "font-semibold",
+                    isPremiumEdition ? "text-amber-700" : "text-foreground"
+                  )}>
+                    ${(effectivePrice / 100).toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Payment</span>
+                  <span className="font-medium">Credit / Debit Card via Stripe</span>
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                You won't be charged until you complete payment on the next screen.
+                Your existing cart will not be affected.
+              </p>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowCardConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              className={cn(isPremiumEdition && "bg-amber-600 hover:bg-amber-700")}
+              onClick={handleConfirmCardPurchase}
+            >
+              <CreditCard className="h-4 w-4 mr-2" />
+              Continue to Payment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

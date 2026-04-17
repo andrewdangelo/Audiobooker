@@ -68,7 +68,7 @@ Create a new service file for payment API calls:
 ```typescript
 // src/services/paymentService.ts
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8009/api/v1/audiobooker_proxy';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1/audiobooker_proxy';
 
 export interface CartItem {
   book_id: string;

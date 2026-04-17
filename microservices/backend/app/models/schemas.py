@@ -85,10 +85,12 @@ class UserPreferencesUpdate(BaseModel):
 class UserCreditsResponse(BaseModel):
     """User credits response"""
     
-    credits: int
+    credits: int                          # Basic credits — standard editions
     credits_used: int
     credits_expiring: int
     expiry_date: Optional[str] = None
+    premium_credits: int = 0              # Premium credits — theatrical editions only
+    premium_credits_used: int = 0
     
     class Config:
         from_attributes = True
@@ -136,11 +138,11 @@ class UserSettingsResponse(BaseModel):
 class ChapterInfo(BaseModel):
     """Chapter information"""
     
-    id: str
+    id: Optional[str] = None
     title: str
     start_time: int
     duration: int
-    chapter_number: int
+    chapter_number: Optional[int] = None
     
     class Config:
         from_attributes = True
@@ -155,6 +157,8 @@ class BookBasic(BaseModel):
     duration: int
     cover_image_url: Optional[str] = None
     progress: Optional[float] = 0.0
+    is_premium: bool = False
+    purchase_type: str = "basic"  # "basic" or "premium"
     
     class Config:
         from_attributes = True
@@ -168,11 +172,20 @@ class BookDetailed(BaseModel):
     author: str
     narrator: Optional[str] = None
     duration: int
-    chapters: List[ChapterInfo]
+    chapters: List[ChapterInfo] = []
     cover_image_url: Optional[str] = None
     audio_url: Optional[str] = None
     progress: Optional[float] = 0.0
     description: Optional[str] = None
+    synopsis: Optional[str] = None
+    genre: Optional[str] = None
+    categories: Optional[List[str]] = None
+    published_year: Optional[int] = None
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+    last_played_at: Optional[str] = None
+    is_premium: bool = False
+    purchase_type: str = "basic"  # "basic" or "premium"
     
     class Config:
         from_attributes = True
@@ -251,6 +264,10 @@ class StoreBookBasic(BaseModel):
     genre: Optional[str] = None
     rating: float
     cover_image_url: Optional[str] = None
+    # Premium (theatrical) edition fields
+    is_premium: bool = False
+    premium_price: Optional[float] = None
+    premium_credits: int = 2
     
     class Config:
         from_attributes = True
@@ -291,11 +308,35 @@ class StoreBookDetailed(BaseModel):
     review_count: int
     sample_audio_url: Optional[str] = None
     cover_image_url: Optional[str] = None
+    # Premium (theatrical) edition fields
+    is_premium: bool = False
+    premium_price: Optional[float] = None
+    premium_credits: int = 2
     
     class Config:
         from_attributes = True
-        
-        
+
+
+class PremiumPurchaseRequest(BaseModel):
+    """Premium book purchase request"""
+
+    book_id: str
+    payment_method: str  # "premium_credits" or "card"
+    # Provided when payment_method is "card"
+    payment_intent_id: Optional[str] = None
+
+
+class PremiumPurchaseResponse(BaseModel):
+    """Premium book purchase response"""
+
+    success: bool
+    book_id: str
+    purchase_type: str = "premium"
+    credits_used: int = 0
+    amount_charged: float = 0.0
+    message: str = "Premium purchase successful"
+
+
 # ============== Cart & Checkout ==============
 
 class CartItemResponse(BaseModel):

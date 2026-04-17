@@ -5,9 +5,12 @@ __author__ = "Mohammad Saifan"
 
 from fastapi import HTTPException, BackgroundTasks, status, APIRouter, UploadFile, File, Query, Depends
 from app.models.schemas import ProcessPDFRequest, ProcessPDFResponse, JobStatusResponse
+import json
+from typing import Any, Dict
 from app.database import database, db_engine
 from app.models.db_models import Collections
 from app.services import pdf_processor_service, r2_service
+from app.utils.validators import is_allowed_book_magic
 from datetime import datetime
 import logging
 
@@ -21,16 +24,26 @@ pdf_processor = pdf_processor_service.PDFProcessorService()
 
 @router.post("/upload_new_pdf")
 async def upload_pdf(user_id: str = Query(..., description="User ID"), file: UploadFile = File(...)):
-    """Upload a PDF file for conversion"""
+    """Upload a PDF or EPUB file for conversion."""
     try:
-        if not file.filename or not file.filename.endswith('.pdf'):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only PDF files are allowed")
-        if not isinstance(file.filename, str):
+        if not file.filename or not isinstance(file.filename, str):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid filename type: {type(file.filename).__name__}")
-        
+        lower = file.filename.lower()
+        if not (lower.endswith(".pdf") or lower.endswith(".epub")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only PDF and EPUB files are allowed",
+            )
+
         logger.info(f"Processing upload: {file.filename} for user {user_id}")
         file_content = await file.read()
         file_size = len(file_content)
+
+        if not is_allowed_book_magic(file_content, file.filename):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File content does not match a valid PDF or EPUB",
+            )
         
         if file_size > 52428800:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"File size exceeds maximum allowed size of 50MB")
@@ -69,9 +82,35 @@ async def process_pdf(user_id: str = Query(..., description="User ID"), request:
         
         job_id = f"job_{request.r2_pdf_path.replace('/', '_')}"
         
-        await pdf_processor.create_job(job_id, {"job_id": job_id, "user_id": user_id, "status": "pending", "r2_key": request.r2_pdf_path, "created_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}", "progress": 0, "message": "Job queued for processing"})
-        
-        background_tasks.add_task(pdf_processor.process_pdf_task, job_id=job_id, user_id=user_id, r2_key=request.r2_pdf_path, chunk_size=request.chunk_size, chunk_overlap=request.chunk_overlap, output_format=request.output_format)
+        meta = request.metadata or {}
+        credit_type = meta.get("credit_type") if isinstance(meta.get("credit_type"), str) else "basic"
+        if credit_type not in ("basic", "premium"):
+            credit_type = "basic"
+
+        await pdf_processor.create_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "user_id": user_id,
+                "status": "pending",
+                "r2_key": request.r2_pdf_path,
+                "pipeline_stage": "pdf_processing",
+                "created_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
+                "progress": 0,
+                "message": "Job queued for processing",
+            },
+        )
+
+        background_tasks.add_task(
+            pdf_processor.process_pdf_task,
+            job_id=job_id,
+            user_id=user_id,
+            r2_key=request.r2_pdf_path,
+            chunk_size=request.chunk_size,
+            chunk_overlap=request.chunk_overlap,
+            output_format=request.output_format,
+            credit_type=credit_type,
+        )
         
         logger.info(f"Job {job_id} queued for processing")
         
@@ -88,11 +127,40 @@ async def process_pdf(user_id: str = Query(..., description="User ID"), request:
 async def get_job_status(job_id: str, user_id: str = Query(..., description="User ID")):
     """Get the status of a processing job"""
     job = await pdf_processor.get_job_by_id(job_id)
-    
+
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job {job_id} not found")
-    
-    return JobStatusResponse(**job)
+
+    j: Dict[str, Any] = dict(job)
+    progress_raw = j.get("progress", 0)
+    try:
+        progress = int(progress_raw)
+    except (TypeError, ValueError):
+        progress = 0
+    progress = max(0, min(100, progress))
+
+    raw_result = j.get("result")
+    parsed_result = None
+    if isinstance(raw_result, dict):
+        parsed_result = raw_result
+    elif isinstance(raw_result, str):
+        try:
+            parsed_result = json.loads(raw_result)
+        except json.JSONDecodeError:
+            parsed_result = None
+
+    return JobStatusResponse(
+        job_id=str(j.get("job_id") or job_id),
+        status=str(j.get("status") or "pending"),
+        progress=progress,
+        message=str(j.get("message") or ""),
+        created_at=str(j.get("created_at") or ""),
+        completed_at=j.get("completed_at"),
+        result=parsed_result,
+        error=j.get("error"),
+        pipeline_stage=j.get("pipeline_stage") if j.get("pipeline_stage") is not None else None,
+        audiobook_id=j.get("audiobook_id") if j.get("audiobook_id") is not None else None,
+    )
 
 
 @router.get("/get_all_jobs")

@@ -249,12 +249,12 @@ Reserved for future subscription support.
 The service is accessible through the API proxy at:
 
 ```
-http://localhost:8009/api/v1/audiobooker_proxy/payment/*
+http://localhost:8000/api/v1/audiobooker_proxy/payment/*
 ```
 
 Example:
 ```bash
-curl http://localhost:8009/api/v1/audiobooker_proxy/payment/health/
+curl http://localhost:8000/api/v1/audiobooker_proxy/payment/health/
 ```
 
 ## Docker

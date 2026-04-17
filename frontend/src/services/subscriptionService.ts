@@ -13,7 +13,7 @@ import api from './api'
 // TYPES
 // ============================================================================
 
-export type SubscriptionPlan = 'none' | 'basic' | 'premium'
+export type SubscriptionPlan = 'none' | 'basic' | 'premium' | 'publisher'
 export type SubscriptionStatus = 'none' | 'active' | 'cancelled' | 'expired' | 'pending_cancellation'
 export type BillingCycle = 'monthly' | 'annual'
 export type CancellationStage = 'initial' | 'reason_collected' | 'discount_offered' | 'discount_accepted' | 'final_confirmation' | 'cancelled'
@@ -100,7 +100,11 @@ export const SUBSCRIPTION_PRICES = {
   premium: {
     monthly: 1999,   // $19.99
     annual: 19999,   // $199.99
-  }
+  },
+  publisher: {
+    monthly: 2999,   // $29.99
+    annual: 29999,   // $299.99
+  },
 }
 
 export const formatPrice = (cents: number): string => {

@@ -50,7 +50,6 @@ services:
     env_file:
       - ./backend/.env.production
     environment:
-      - DATABASE_URL=postgresql://${DB_USER:-audiobooker}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-audiobooker_db}
       - REDIS_URL=redis://redis:6379/0
     ports:
       - "${API_PORT:-8000}:8000"

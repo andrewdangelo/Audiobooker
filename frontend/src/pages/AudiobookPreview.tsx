@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { AudioPreview } from '@/types/preview';
 import { ArrowLeft, Sparkles, Users, BookOpen } from 'lucide-react';
+import api from '@/services/api';
 
 /**
  * AudiobookPreview Page
@@ -26,79 +27,14 @@ export default function AudiobookPreview() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // BACKEND INTEGRATION NOTE:
   // Fetch preview data on component mount
-  // Endpoint: GET /api/previews/{previewId}
+  // Proxy route: GET /backend/previews/{previewId}
   useEffect(() => {
     const fetchPreview = async () => {
       try {
         setIsLoading(true);
-        
-        // TODO: Replace with actual API call
-        // const response = await fetch(`/api/previews/${previewId}`);
-        // const data = await response.json();
-        // setPreview(data);
-        
-        // Mock data for demonstration
-        const mockPreview: AudioPreview = {
-          id: previewId || '1',
-          audiobookId: 'book-123',
-          creditType: 'premium',
-          processingStatus: 'completed',
-          processingProgress: 100,
-          basicVoicePreviewUrl: '/samples/basic-preview.mp3',
-          basicVoiceId: 'voice-1',
-          characterVoices: [
-            {
-              characterName: 'Narrator',
-              characterDescription: 'The omniscient storyteller',
-              selectedVoiceId: 'voice-narrator',
-              previewUrl: '/samples/narrator.mp3'
-            },
-            {
-              characterName: 'John Doe',
-              characterDescription: 'The protagonist, mid-30s male',
-              selectedVoiceId: 'voice-john',
-              previewUrl: '/samples/john.mp3'
-            },
-            {
-              characterName: 'Jane Smith',
-              characterDescription: 'The deuteragonist, late-20s female',
-              selectedVoiceId: 'voice-jane',
-              previewUrl: '/samples/jane.mp3'
-            }
-          ],
-          availableVoices: [
-            {
-              id: 'voice-1',
-              name: 'Michael',
-              description: 'Warm, professional male voice',
-              gender: 'male',
-              accent: 'American',
-              sampleUrl: '/samples/voice-michael.mp3'
-            },
-            {
-              id: 'voice-2',
-              name: 'Sarah',
-              description: 'Clear, engaging female voice',
-              gender: 'female',
-              accent: 'British',
-              sampleUrl: '/samples/voice-sarah.mp3'
-            },
-            {
-              id: 'voice-3',
-              name: 'David',
-              description: 'Deep, authoritative male voice',
-              gender: 'male',
-              accent: 'Australian',
-              sampleUrl: '/samples/voice-david.mp3'
-            }
-          ],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-
-        setPreview(mockPreview);
+        const response = await api.get<AudioPreview>(`/backend/previews/${previewId}`);
+        setPreview(response.data);
       } catch (err) {
         setError('Failed to load preview. Please try again.');
         console.error('Error fetching preview:', err);
@@ -119,10 +55,9 @@ export default function AudiobookPreview() {
 
     const pollInterval = setInterval(async () => {
       try {
-        // TODO: Replace with actual API call
-        // const response = await fetch(`/api/previews/${previewId}/status`);
-        // const data = await response.json();
-        // setPreview(prev => prev ? { ...prev, ...data } : null);
+        // Proxy route: GET /backend/previews/{previewId}/status
+        const response = await api.get<Partial<AudioPreview>>(`/backend/previews/${previewId}/status`);
+        setPreview(prev => prev ? { ...prev, ...response.data } : null);
       } catch (err) {
         console.error('Error polling status:', err);
       }
@@ -136,17 +71,11 @@ export default function AudiobookPreview() {
     if (!preview) return;
 
     try {
-      // BACKEND INTEGRATION NOTE:
-      // Update character voice selection
-      // Endpoint: PUT /api/previews/{previewId}/character-voices
-      // Body: { characterName: string, voiceId: string }
-      
-      // TODO: Replace with actual API call
-      // await fetch(`/api/previews/${previewId}/character-voices`, {
-      //   method: 'PUT',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({ characterName, voiceId })
-      // });
+      // Proxy route: PUT /tts_infra/tts_processor/previews/{previewId}/character-voices
+      await api.put(`/tts_infra/tts_processor/previews/${previewId}/character-voices`, {
+        characterName,
+        voiceId,
+      });
 
       // Update local state
       setPreview(prev => {
@@ -168,15 +97,9 @@ export default function AudiobookPreview() {
   // Handle final confirmation and proceed to conversion
   const handleConfirmAndProceed = async () => {
     try {
-      // BACKEND INTEGRATION NOTE:
-      // Confirm voice selections and start full audiobook conversion
-      // Endpoint: POST /api/previews/{previewId}/confirm
-      // This should queue the full TTS conversion job
-      
-      // TODO: Replace with actual API call
-      // await fetch(`/api/previews/${previewId}/confirm`, {
-      //   method: 'POST'
-      // });
+      // Proxy route: POST /backend/previews/{previewId}/confirm
+      // Queues the full TTS conversion job
+      await api.post(`/backend/previews/${previewId}/confirm`);
 
       // Navigate to conversion progress page or library
       navigate('/library');

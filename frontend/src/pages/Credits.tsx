@@ -353,7 +353,7 @@ export default function Credits() {
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2">
                           <CreditCard className="h-4 w-4 text-muted-foreground" />
-                          <span>{formatAmount(payment.amount)}</span>
+                          <span>{formatAmount(payment.amount_cents)}</span>
                         </div>
                       </td>
                       <td className="py-3 px-4">

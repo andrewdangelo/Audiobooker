@@ -21,6 +21,7 @@ from app.database.mongodb import MongoDB
 from app.routers import health
 from app.routers.auth_mongo import router as auth_router
 from app.routers.accounts_mongo import router as accounts_router
+from app.routers.internal import router as internal_router
 
 # Setup logging
 setup_logging()
@@ -38,12 +39,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB: {str(e)}")
         raise
-    
+    logger.info(f"Auth Service started on port {settings.PORT}")
+    logger.info(f"Environment: {settings.ENVIRONMENT}")
+    logger.info(f"Google OAuth enabled: {bool(settings.GOOGLE_CLIENT_ID)}")
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down Auth Service...")
     await MongoDB.disconnect()
+    logger.info("Auth Service shutdown")
 
 
 # Initialize FastAPI app
@@ -98,19 +103,11 @@ app.include_router(
     tags=["-ACCOUNTS-"]
 )
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Application startup event"""
-    logger.info(f"Auth Service started on port {settings.PORT}")
-    logger.info(f"Environment: {settings.ENVIRONMENT}")
-    logger.info(f"Google OAuth enabled: {bool(settings.GOOGLE_CLIENT_ID)}")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Application shutdown event"""
-    logger.info("Auth Service shutdown")
+app.include_router(
+    internal_router,
+    prefix=f"{settings.API_V1_PREFIX}/internal",
+    tags=["-INTERNAL-"]
+)
 
 
 if __name__ == "__main__":
@@ -119,5 +116,14 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=settings.PORT,
         reload=settings.DEBUG,
+        reload_excludes=[
+            "venv",
+            ".venv",
+            "__pycache__",
+            "*.pyc",
+            "seed_users.py",
+            "test_*.py",
+            "logs",
+        ],
         log_level=settings.LOG_LEVEL.lower()
     )

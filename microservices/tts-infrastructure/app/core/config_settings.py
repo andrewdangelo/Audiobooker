@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     
     # Environment
     ENVIRONMENT: str = Field(default="development", description="Environment: development, staging, production")
-    PORT: int = Field(default=8002, description="Service port")
+    PORT: int = Field(default=8003, description="Service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     DEBUG: bool = True
     TEST_VERSION: str = Field(default="Check ENV Version...", description="Application test version")
@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1/tts"
     
     # Database
-    DATABASE_URL: str = "postgresql://audiobooker:password@localhost:5432/audiobooker_db"
+    DATABASE_URL: str = Field(
+        default="mongodb://user:password@localhost:27017/audiobooker",
+        description="MongoDB connection URI",
+    )
     
     # R2 Storage
     R2_ACCOUNT_ID: str = Field(..., description="Cloudflare account ID")
@@ -61,7 +64,13 @@ class Settings(BaseSettings):
     # OpenAI Defaults #TODO Change default settings later
     OPENAI_DEFAULT_VOICE: str = "alloy"
     OPENAI_DEFAULT_MODEL: str = "tts-1"
-    
+
+    # Internal service-to-service auth key
+    INTERNAL_SERVICE_KEY: str = Field(
+        default="change-me-internal-key",
+        description="Shared secret used to authenticate inter-service HTTP calls"
+    )
+
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         """Validate environment values"""

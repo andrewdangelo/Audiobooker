@@ -2,7 +2,7 @@
  * Auth Service
  * 
  * Handles authentication requests to the auth microservice via API proxy
- * All requests go through http://localhost:8009/auth/*
+ * All requests go through http://localhost:8000/auth/*
  */
 
 import api from './api'
@@ -243,10 +243,24 @@ class AuthService {
   }
 
   /**
+   * Deduct one basic or premium credit on the server (authenticated).
+   */
+  async consumeConversionCredit(
+    creditType: 'basic' | 'premium',
+  ): Promise<{ basic_credits: number; premium_credits: number; total_credits: number }> {
+    const response = await api.post<{
+      basic_credits: number
+      premium_credits: number
+      total_credits: number
+    }>(`${this.ACCOUNTS_PREFIX}/credits/consume-conversion`, { credit_type: creditType })
+    return response.data
+  }
+
+  /**
    * Get user subscription status
    */
   async getSubscriptionStatus(token: string): Promise<{
-    subscription_plan: 'none' | 'basic' | 'premium'
+    subscription_plan: 'none' | 'basic' | 'premium' | 'publisher'
     subscription_status: 'none' | 'active' | 'cancelled' | 'expired' | 'pending_cancellation'
     subscription_billing_cycle: 'monthly' | 'annual' | null
     subscription_end_date: string | null

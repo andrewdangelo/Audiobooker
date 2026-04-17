@@ -7,8 +7,9 @@ Using Pydantic Settings, Will Automatically Load from environment variables with
 __author__ = "Mohammad Saifan"
 
 from pydantic_settings import BaseSettings
-from pydantic import Field, validator
+from pydantic import Field, field_validator
 from typing import List, Optional
+import json
 from pathlib import Path
 
 
@@ -34,6 +35,12 @@ class Settings(BaseSettings):
         default="audiobooker_backend_db",
         description="MongoDB database name"
     )
+
+    # Internal service-to-service auth key (shared with payment service)
+    INTERNAL_SERVICE_KEY: str = Field(
+        default="change-me-internal-key",
+        description="Shared secret used to authenticate inter-service HTTP calls"
+    )
     
     # R2 Storage
     R2_ACCOUNT_ID: str = Field(default="", description="Cloudflare account ID")
@@ -53,16 +60,26 @@ class Settings(BaseSettings):
     REDIS_PORT: int = Field(default=6379, description="Redis port")
     REDIS_DB: int = Field(default=0, description="Redis database number")
     REDIS_PASSWORD: Optional[str] = Field(default=None, description="Redis password")
+
+    # JWT & Auth
+    JWT_SECRET_KEY: str = Field(default="change-this-in-production", description="JWT signing secret")
+    JWT_ALGORITHM: str = Field(default="HS256", description="JWT algorithm")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, description="Access token expiry in minutes")
+
+    # File Upload
+    MAX_FILE_SIZE_MB: int = Field(default=100, description="Max upload file size in MB")
     
-    @validator("ENVIRONMENT")
+    @field_validator("ENVIRONMENT")
+    @classmethod
     def validate_environment(cls, v):
         """Validate environment values"""
         allowed = ["development", "staging", "production"]
         if v not in allowed:
             raise ValueError(f"ENVIRONMENT must be one of {allowed}")
         return v
-    
-    @validator("LOG_LEVEL")
+
+    @field_validator("LOG_LEVEL")
+    @classmethod
     def validate_log_level(cls, v):
         """Validate log level"""
         allowed = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -70,11 +87,15 @@ class Settings(BaseSettings):
             raise ValueError(f"LOG_LEVEL must be one of {allowed}")
         return v.upper()
     
-    @validator("CORS_ORIGINS", pre=True)
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
     def parse_cors_origins(cls, v):
-        """Parse CORS origins from string or list"""
+        """Parse CORS origins from JSON array string or comma-separated string"""
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
+            v = v.strip()
+            if v.startswith("["):
+                return json.loads(v)
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
     
     @property
@@ -99,6 +120,7 @@ class Settings(BaseSettings):
         env_file = str(Path(__file__).resolve().parent.parent.parent / ".env")
         env_file_encoding = "utf-8"
         case_sensitive = True
+        extra = "ignore"
 
 
 # Global settings instance

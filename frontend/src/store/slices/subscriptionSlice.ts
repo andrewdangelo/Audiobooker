@@ -260,10 +260,19 @@ const subscriptionSlice = createSlice({
       .addCase(purchaseSubscription.fulfilled, (state, action) => {
         state.purchasing = false
         if (!action.payload.already_subscribed) {
-          state.plan = action.payload.plan
-          state.status = 'active'
-          state.billingCycle = action.payload.billing_cycle
-          state.isSubscribed = true
+          // If Stripe returns a checkout_url, the user hasn't paid yet — keep pending
+          if (action.payload.checkout_url) {
+            state.status = 'none'
+            state.plan = action.payload.plan
+            state.billingCycle = action.payload.billing_cycle
+            state.isSubscribed = false
+          } else {
+            // Simulated / already-activated path
+            state.plan = action.payload.plan
+            state.status = 'active'
+            state.billingCycle = action.payload.billing_cycle
+            state.isSubscribed = true
+          }
         }
       })
       .addCase(purchaseSubscription.rejected, (state, action) => {

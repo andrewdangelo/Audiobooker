@@ -15,7 +15,7 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import { authService } from '@/services/authService'
-import { setUserCredits } from './storeSlice'
+import { setUserCredits, setUserPremiumCredits } from './storeSlice'
 import { setSubscription } from './subscriptionSlice'
 
 // Types - matches API response from auth service
@@ -32,7 +32,7 @@ export interface AuthUser {
   basic_credits?: number
   premium_credits?: number
   // Subscription fields
-  subscription_plan?: 'none' | 'basic' | 'premium'
+  subscription_plan?: 'none' | 'basic' | 'premium' | 'publisher'
   subscription_status?: 'none' | 'active' | 'cancelled' | 'expired' | 'pending_cancellation'
   subscription_billing_cycle?: 'monthly' | 'annual' | null
   subscription_end_date?: string | null
@@ -122,8 +122,9 @@ export const fetchUserCredits = createAsyncThunk(
       
       const response = await authService.getUserCredits(token)
       
-      // Update store slice with fetched credits (use total_credits)
-      dispatch(setUserCredits(response.total_credits))
+      // Update store slice with fetched credits
+      dispatch(setUserCredits(response.basic_credits))
+      dispatch(setUserPremiumCredits(response.premium_credits))
       
       return response.total_credits
     } catch (error) {

@@ -20,12 +20,11 @@ COPY . .
 # Create logs directory
 RUN mkdir -p logs
 
-# Expose port
-EXPOSE 8004
+ENV PORT=8005
+EXPOSE 8005
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8004/api/v1/payment/health/ || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=5 \
+    CMD curl -fsS http://127.0.0.1:8005/api/v1/payment/health/ || exit 1
 
 # Run application
 CMD ["python", "main.py"]

@@ -9,13 +9,21 @@ Endpoints for subscription management including:
 """
 
 import logging
+import stripe
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException
 from bson import ObjectId
 
 from app.core.config_settings import settings
+from app.core.pricing import (
+    get_subscription_credit_grant,
+    get_subscription_price,
+    serialize_credit_pack_catalog,
+    serialize_subscription_catalog,
+)
 from app.database.mongodb import MongoDB
+from app.services import service_client
 from app.models.schemas import (
     SubscriptionPurchaseRequest,
     SubscriptionPurchaseResponse,
@@ -27,27 +35,43 @@ from app.models.schemas import (
     SubscriptionStatus,
     BillingCycle,
     CancellationStage,
+    SubscriptionCatalogItemResponse,
+    CreditPackResponse,
 )
+from app.services.stripe_service import stripe_service
 
 logger = logging.getLogger(__name__)
+# Import side effect ensures Stripe is configured before direct Stripe SDK calls here.
+_ = stripe_service
 
 router = APIRouter()
-
-# Subscription pricing (in cents)
-SUBSCRIPTION_PRICES = {
-    SubscriptionPlan.BASIC: {
-        BillingCycle.MONTHLY: 999,    # $9.99
-        BillingCycle.ANNUAL: 9999,    # $99.99 (save ~17%)
-    },
-    SubscriptionPlan.PREMIUM: {
-        BillingCycle.MONTHLY: 1999,   # $19.99
-        BillingCycle.ANNUAL: 19999,   # $199.99 (save ~17%)
-    }
-}
 
 # Retention discount (50% off for 6 months)
 RETENTION_DISCOUNT_PERCENTAGE = 50
 RETENTION_DISCOUNT_MONTHS = 6
+
+
+@router.get("/pricing/plans", response_model=list[SubscriptionCatalogItemResponse], tags=["Subscription"])
+async def get_subscription_plans():
+    """Return the canonical subscription catalog."""
+    return serialize_subscription_catalog()
+
+
+@router.get("/pricing/credit-packs", response_model=list[CreditPackResponse], tags=["Subscription"])
+async def get_credit_packs(credit_type: Optional[str] = None):
+    """Return the canonical one-time credit pack catalog."""
+    if credit_type and credit_type not in {"basic", "premium"}:
+        raise HTTPException(status_code=400, detail="credit_type must be 'basic' or 'premium'")
+    return serialize_credit_pack_catalog(credit_type)
+
+
+@router.get("/pricing/credit-packs/{pack_id}", response_model=CreditPackResponse, tags=["Subscription"])
+async def get_credit_pack(pack_id: str):
+    """Return a single one-time credit pack."""
+    pack = next((item for item in serialize_credit_pack_catalog() if item["id"] == pack_id), None)
+    if not pack:
+        raise HTTPException(status_code=404, detail="Credit pack not found")
+    return pack
 
 
 # =========================================================================
@@ -60,11 +84,11 @@ async def get_subscription_status(user_id: str):
     Get user's current subscription status.
     """
     try:
-        user = await MongoDB.get_user_by_id(user_id)
-        
+        user = await service_client.get_user_by_id(user_id)
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         plan = user.get("subscription_plan", "none")
         status = user.get("subscription_status", "none")
         
@@ -100,11 +124,11 @@ async def purchase_subscription(request: SubscriptionPurchaseRequest):
     """
     try:
         # Get user's current subscription status
-        user = await MongoDB.get_user_by_id(request.user_id)
-        
+        user = await service_client.get_user_by_id(request.user_id)
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         current_plan = user.get("subscription_plan", "none")
         current_status = user.get("subscription_status", "none")
         
@@ -143,7 +167,7 @@ async def purchase_subscription(request: SubscriptionPurchaseRequest):
         if request.plan == SubscriptionPlan.NONE:
             raise HTTPException(status_code=400, detail="Invalid subscription plan")
         
-        price_cents = SUBSCRIPTION_PRICES[request.plan][request.billing_cycle]
+        price_cents = get_subscription_price(request.plan, request.billing_cycle)
         
         # Apply retention discount if applicable
         if request.apply_discount and user.get("subscription_discount_applied") is False:
@@ -166,58 +190,135 @@ async def purchase_subscription(request: SubscriptionPurchaseRequest):
         
         result = await subscriptions.insert_one(subscription_doc)
         subscription_id = str(result.inserted_id)
-        
-        # For now, simulate successful subscription (in production, use Stripe)
-        # Update user's subscription status
-        subscription_end = datetime.utcnow() + (
-            timedelta(days=365) if request.billing_cycle == BillingCycle.ANNUAL 
-            else timedelta(days=30)
-        )
-        
-        await MongoDB.auth_db.users.update_one(
-            {"_id": ObjectId(request.user_id)},
-            {
-                "$set": {
-                    "subscription_plan": request.plan.value,
-                    "subscription_status": "active",
-                    "subscription_billing_cycle": request.billing_cycle.value,
-                    "subscription_start_date": datetime.utcnow(),
-                    "subscription_end_date": subscription_end,
-                    "subscription_discount_applied": request.apply_discount,
-                    "subscription_discount_end_date": (
-                        datetime.utcnow() + timedelta(days=30 * RETENTION_DISCOUNT_MONTHS)
-                        if request.apply_discount else None
-                    ),
-                    "updated_at": datetime.utcnow()
-                }
+
+        # Determine Stripe Price ID for this plan+cycle
+        plan_key = request.plan.value.upper()    # BASIC | PREMIUM | PUBLISHER
+        cycle_key = request.billing_cycle.value.upper()  # MONTHLY | ANNUAL
+        price_id = getattr(settings, f"STRIPE_{plan_key}_{cycle_key}_PRICE_ID", "")
+
+        if price_id:
+            # ── Real Stripe subscription checkout ──────────────────────────
+            success_base = request.success_url or settings.PAYMENT_SUCCESS_URL
+            cancel_base = request.cancel_url or settings.PAYMENT_CANCEL_URL
+            success_url = (
+                f"{success_base}"
+                f"?purchase_type=subscription"
+                f"&session_id={{CHECKOUT_SESSION_ID}}"
+                f"&subscription_id={subscription_id}"
+                f"&plan={request.plan.value}"
+                f"&billing_cycle={request.billing_cycle.value}"
+            )
+            cancel_url = (
+                f"{cancel_base}"
+                f"?purchase_type=subscription"
+                f"&subscription_id={subscription_id}"
+                f"&plan={request.plan.value}"
+                f"&billing_cycle={request.billing_cycle.value}"
+            )
+
+            session_params: dict = {
+                "mode": "subscription",
+                "line_items": [{"price": price_id, "quantity": 1}],
+                "success_url": success_url,
+                "cancel_url": cancel_url,
+                "client_reference_id": request.user_id,
+                "metadata": {
+                    "user_id": request.user_id,
+                    "plan": request.plan.value,
+                    "billing_cycle": request.billing_cycle.value,
+                    "subscription_id": subscription_id,
+                },
+                "subscription_data": {
+                    "metadata": {
+                        "user_id": request.user_id,
+                        "plan": request.plan.value,
+                        "billing_cycle": request.billing_cycle.value,
+                        "subscription_id": subscription_id,
+                    }
+                },
             }
-        )
-        
-        # Update subscription record
-        await subscriptions.update_one(
-            {"_id": ObjectId(subscription_id)},
-            {"$set": {"status": "active", "updated_at": datetime.utcnow()}}
-        )
-        
-        # Add monthly credits based on plan
-        credit_field = "basic_credits" if request.plan == SubscriptionPlan.BASIC else "premium_credits"
-        await MongoDB.auth_db.users.update_one(
-            {"_id": ObjectId(request.user_id)},
-            {"$inc": {credit_field: 1}}  # Add 1 credit for the subscription
-        )
-        
-        return SubscriptionPurchaseResponse(
-            subscription_id=subscription_id,
-            checkout_url=None,  # Would be Stripe URL in production
-            client_secret=None,
-            plan=request.plan,
-            billing_cycle=request.billing_cycle,
-            amount_cents=price_cents,
-            status="active",
-            already_subscribed=False,
-            message=f"Successfully subscribed to {request.plan.value.capitalize()} plan! "
-                   f"Your subscription is active until {subscription_end.strftime('%B %d, %Y')}."
-        )
+
+            # Apply retention discount coupon if requested
+            if request.apply_discount and user.get("subscription_cancelled_at"):
+                coupon = stripe.Coupon.create(
+                    percent_off=RETENTION_DISCOUNT_PERCENTAGE,
+                    duration="repeating",
+                    duration_in_months=RETENTION_DISCOUNT_MONTHS,
+                )
+                session_params["discounts"] = [{"coupon": coupon.id}]
+
+            try:
+                session = stripe.checkout.Session.create(**session_params)
+            except stripe.error.StripeError as se:
+                logger.error(f"Stripe session creation failed: {se}")
+                raise HTTPException(status_code=502, detail="Failed to create Stripe checkout session")
+
+            # Update internal record with session reference
+            await subscriptions.update_one(
+                {"_id": ObjectId(subscription_id)},
+                {
+                    "$set": {
+                        "stripe_checkout_session_id": session.id,
+                        "updated_at": datetime.utcnow(),
+                    }
+                },
+            )
+
+            return SubscriptionPurchaseResponse(
+                subscription_id=subscription_id,
+                checkout_url=session.url,
+                client_secret=None,
+                plan=request.plan,
+                billing_cycle=request.billing_cycle,
+                amount_cents=price_cents,
+                status="pending",
+                already_subscribed=False,
+                message=f"Redirecting to checkout for {request.plan.value.capitalize()} plan.",
+            )
+
+        else:
+            # ── Fallback: simulated activation (dev / no Stripe keys) ──────
+            subscription_end = datetime.utcnow() + (
+                timedelta(days=365) if request.billing_cycle == BillingCycle.ANNUAL
+                else timedelta(days=30)
+            )
+
+            await service_client.update_user_subscription(request.user_id, {
+                "subscription_plan": request.plan.value,
+                "subscription_status": "active",
+                "subscription_billing_cycle": request.billing_cycle.value,
+                "subscription_start_date": datetime.utcnow(),
+                "subscription_end_date": subscription_end,
+                "subscription_discount_applied": request.apply_discount,
+                "subscription_discount_end_date": (
+                    datetime.utcnow() + timedelta(days=30 * RETENTION_DISCOUNT_MONTHS)
+                    if request.apply_discount else None
+                ),
+            })
+
+            # Update subscription record
+            await subscriptions.update_one(
+                {"_id": ObjectId(subscription_id)},
+                {"$set": {"status": "active", "updated_at": datetime.utcnow()}},
+            )
+
+            # Add subscription credits (typed field + legacy total)
+            await service_client.update_user_credits(request.user_id, get_subscription_credit_grant(request.plan))
+
+            return SubscriptionPurchaseResponse(
+                subscription_id=subscription_id,
+                checkout_url=None,
+                client_secret=None,
+                plan=request.plan,
+                billing_cycle=request.billing_cycle,
+                amount_cents=price_cents,
+                status="active",
+                already_subscribed=False,
+                message=(
+                    f"Successfully subscribed to {request.plan.value.capitalize()} plan! "
+                    f"Your subscription is active until {subscription_end.strftime('%B %d, %Y')}."
+                ),
+            )
         
     except HTTPException:
         raise
@@ -244,14 +345,14 @@ async def cancel_subscription(request: CancellationRequest):
     6. CANCELLED - Subscription cancelled (at period end)
     """
     try:
-        user = await MongoDB.get_user_by_id(request.user_id)
-        
+        user = await service_client.get_user_by_id(request.user_id)
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         current_status = user.get("subscription_status", "none")
         current_plan = user.get("subscription_plan", "none")
-        
+
         if current_status not in ["active", "pending_cancellation"]:
             raise HTTPException(
                 status_code=400, 
@@ -259,12 +360,17 @@ async def cancel_subscription(request: CancellationRequest):
             )
         
         billing_cycle = user.get("subscription_billing_cycle", "monthly")
-        current_price = SUBSCRIPTION_PRICES.get(
-            SubscriptionPlan(current_plan), 
-            {}
-        ).get(BillingCycle(billing_cycle), 999)
+        current_price = get_subscription_price(
+            SubscriptionPlan(current_plan),
+            BillingCycle(billing_cycle),
+        )
         
         subscription_end = user.get("subscription_end_date", datetime.utcnow() + timedelta(days=30))
+        if isinstance(subscription_end, str):
+            try:
+                subscription_end = datetime.fromisoformat(subscription_end.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                subscription_end = datetime.utcnow() + timedelta(days=30)
         
         # Stage-based handling
         if request.stage == CancellationStage.INITIAL:
@@ -312,16 +418,10 @@ async def cancel_subscription(request: CancellationRequest):
                 # User accepted the discount!
                 discount_end = datetime.utcnow() + timedelta(days=30 * RETENTION_DISCOUNT_MONTHS)
                 
-                await MongoDB.auth_db.users.update_one(
-                    {"_id": ObjectId(request.user_id)},
-                    {
-                        "$set": {
-                            "subscription_discount_applied": True,
-                            "subscription_discount_end_date": discount_end,
-                            "updated_at": datetime.utcnow()
-                        }
-                    }
-                )
+                await service_client.update_user_subscription(request.user_id, {
+                    "subscription_discount_applied": True,
+                    "subscription_discount_end_date": discount_end,
+                })
                 
                 return CancellationResponse(
                     user_id=request.user_id,
@@ -347,16 +447,18 @@ async def cancel_subscription(request: CancellationRequest):
         
         elif request.stage == CancellationStage.FINAL_CONFIRMATION:
             # Final cancellation - set to pending_cancellation (cancels at period end)
-            await MongoDB.auth_db.users.update_one(
-                {"_id": ObjectId(request.user_id)},
-                {
-                    "$set": {
-                        "subscription_status": "pending_cancellation",
-                        "subscription_cancelled_at": datetime.utcnow(),
-                        "updated_at": datetime.utcnow()
-                    }
-                }
-            )
+            stripe_subscription_id = user.get("stripe_subscription_id")
+            if stripe_subscription_id:
+                try:
+                    stripe.Subscription.modify(stripe_subscription_id, cancel_at_period_end=True)
+                except stripe.error.StripeError as exc:
+                    logger.error(f"Failed to set cancel_at_period_end for {stripe_subscription_id}: {exc}")
+                    raise HTTPException(status_code=502, detail="Failed to cancel Stripe subscription")
+
+            await service_client.update_user_subscription(request.user_id, {
+                "subscription_status": "pending_cancellation",
+                "subscription_cancelled_at": datetime.utcnow(),
+            })
             
             # Update subscription record
             subscriptions = MongoDB.get_db().subscriptions
@@ -406,25 +508,27 @@ async def resubscribe(request: SubscriptionPurchaseRequest):
     If user was previously subscribed, offers retention discount.
     """
     try:
-        user = await MongoDB.get_user_by_id(request.user_id)
-        
+        user = await service_client.get_user_by_id(request.user_id)
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         current_status = user.get("subscription_status", "none")
-        
+
         # If pending cancellation, just reactivate
         if current_status == "pending_cancellation":
-            await MongoDB.auth_db.users.update_one(
-                {"_id": ObjectId(request.user_id)},
-                {
-                    "$set": {
-                        "subscription_status": "active",
-                        "subscription_cancelled_at": None,
-                        "updated_at": datetime.utcnow()
-                    }
-                }
-            )
+            stripe_subscription_id = user.get("stripe_subscription_id")
+            if stripe_subscription_id:
+                try:
+                    stripe.Subscription.modify(stripe_subscription_id, cancel_at_period_end=False)
+                except stripe.error.StripeError as exc:
+                    logger.error(f"Failed to reactivate Stripe subscription {stripe_subscription_id}: {exc}")
+                    raise HTTPException(status_code=502, detail="Failed to reactivate Stripe subscription")
+
+            await service_client.update_user_subscription(request.user_id, {
+                "subscription_status": "active",
+                "subscription_cancelled_at": None,
+            })
             
             return SubscriptionPurchaseResponse(
                 subscription_id="reactivated",
@@ -461,21 +565,21 @@ async def get_retention_offer(user_id: str):
     Returns discount offer details if user is eligible.
     """
     try:
-        user = await MongoDB.get_user_by_id(user_id)
-        
+        user = await service_client.get_user_by_id(user_id)
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         current_plan = user.get("subscription_plan", "none")
         billing_cycle = user.get("subscription_billing_cycle", "monthly")
         
         if current_plan == "none":
             raise HTTPException(status_code=400, detail="User has no subscription to offer discount on")
         
-        current_price = SUBSCRIPTION_PRICES.get(
-            SubscriptionPlan(current_plan), 
-            {}
-        ).get(BillingCycle(billing_cycle), 999)
+        current_price = get_subscription_price(
+            SubscriptionPlan(current_plan),
+            BillingCycle(billing_cycle),
+        )
         
         discounted_price = int(current_price * (1 - RETENTION_DISCOUNT_PERCENTAGE / 100))
         

@@ -13,11 +13,14 @@ Automatically uses sandbox/test mode when in development environment.
 import stripe
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from bson import ObjectId
+from bson.errors import InvalidId
 
 from app.core.config_settings import settings
+from app.core.pricing import get_subscription_credit_grant
 from app.database.mongodb import MongoDB
+from app.services import service_client
 from app.models.schemas import (
     CartItem, PaymentStatus, PaymentMethod, OrderStatus,
     PaymentIntentResponse, CheckoutSessionResponse, RefundResponse
@@ -52,6 +55,53 @@ class StripePaymentService:
     def is_sandbox(self) -> bool:
         """Check if running in sandbox mode"""
         return settings.is_sandbox_mode
+
+    def _serialize_payment(self, payment: dict) -> dict:
+        """Normalize payment documents for API responses."""
+        return {
+            "payment_id": str(payment["_id"]),
+            "stripe_payment_intent_id": payment.get("stripe_payment_intent_id"),
+            "status": payment["status"],
+            "amount_cents": payment["amount_cents"],
+            "currency": payment["currency"],
+            "payment_method": payment["payment_method"],
+            "metadata": payment.get("metadata"),
+            "created_at": payment.get("created_at"),
+            "updated_at": payment.get("updated_at"),
+        }
+
+    async def _find_payment(self, payment_reference: str) -> Optional[dict]:
+        """Find a payment by internal id, PaymentIntent id, or Checkout Session id."""
+        payments = MongoDB.get_db().payments
+
+        try:
+            if ObjectId.is_valid(payment_reference):
+                payment = await payments.find_one({"_id": ObjectId(payment_reference)})
+                if payment:
+                    return payment
+        except InvalidId:
+            pass
+
+        for query in (
+            {"stripe_payment_intent_id": payment_reference},
+            {"stripe_checkout_session_id": payment_reference},
+        ):
+            payment = await payments.find_one(query)
+            if payment:
+                return payment
+
+        return None
+
+    def _map_stripe_payment_status(self, stripe_status: str) -> PaymentStatus:
+        status_map = {
+            "succeeded": PaymentStatus.SUCCEEDED,
+            "processing": PaymentStatus.PROCESSING,
+            "requires_payment_method": PaymentStatus.PENDING,
+            "requires_action": PaymentStatus.PENDING,
+            "requires_confirmation": PaymentStatus.PENDING,
+            "canceled": PaymentStatus.CANCELLED,
+        }
+        return status_map.get(stripe_status, PaymentStatus.PENDING)
     
     # =========================================================================
     # PAYMENT INTENT METHODS
@@ -350,16 +400,25 @@ class StripePaymentService:
         
         if event_type == "payment_intent.succeeded":
             return await self._handle_payment_succeeded(data)
-        
+
         elif event_type == "payment_intent.payment_failed":
             return await self._handle_payment_failed(data)
-        
+
         elif event_type == "checkout.session.completed":
             return await self._handle_checkout_completed(data)
-        
+
         elif event_type == "charge.refunded":
             return await self._handle_refund(data)
-        
+
+        elif event_type == "customer.subscription.updated":
+            return await self._handle_subscription_updated(data)
+
+        elif event_type == "invoice.payment_succeeded":
+            return await self._handle_subscription_invoice_paid(data)
+
+        elif event_type == "customer.subscription.deleted":
+            return await self._handle_subscription_deleted(data)
+
         else:
             logger.info(f"Unhandled webhook event type: {event_type}")
             return {"status": "ignored", "event_type": event_type}
@@ -387,7 +446,10 @@ class StripePaymentService:
                 metadata = payment.get("metadata", {})
                 purchase_type = metadata.get("purchase_type")
                 
-                # If this is a credits or plan purchase with credits, add credits to user account
+                # If this is a credits or plan purchase with credits, add credits to user account.
+                # Use an atomic find_one_and_update to claim the grant so this webhook handler
+                # and the /complete-credit-purchase endpoint cannot both fire $inc simultaneously
+                # (the previous read→check→write was vulnerable to a race that doubled credits).
                 if purchase_type in ("credits", "plan") and "credits" in metadata:
                     try:
                         credits_to_add = int(metadata.get("credits", 0))
@@ -397,19 +459,31 @@ class StripePaymentService:
                         if credits_to_add > 0 and user_id:
                             # Determine which credit field to update based on type
                             credit_field = "premium_credits" if credit_type == "premium" else "basic_credits"
-                            
-                            # Add credits to user in auth database
-                            await MongoDB.get_auth_db().users.update_one(
-                                {"_id": ObjectId(user_id)},
+
+                            # Atomically claim the grant — filter ensures only one caller wins.
+                            from datetime import datetime as _dt
+                            claimed = await MongoDB.get_db().payments.find_one_and_update(
                                 {
-                                    "$inc": {
-                                        credit_field: credits_to_add,
-                                        "credits": credits_to_add  # Legacy total field
-                                    },
-                                    "$set": {"updated_at": datetime.utcnow()}
-                                }
+                                    "stripe_payment_intent_id": payment_intent_id,
+                                    "credits_granted": {"$ne": True},
+                                },
+                                {"$set": {
+                                    "credits_granted": True,
+                                    "credits_granted_amount": credits_to_add,
+                                    "credits_granted_type": credit_type,
+                                    "updated_at": _dt.utcnow(),
+                                }},
                             )
-                            logger.info(f"Added {credits_to_add} {credit_type} credits to user {user_id} from payment {payment_intent_id}")
+
+                            if claimed is None:
+                                logger.info(f"Credits already granted for payment {payment_intent_id}, skipping webhook grant")
+                            else:
+                                # We own the grant — now safely call $inc.
+                                await service_client.update_user_credits(user_id, {
+                                    credit_field: credits_to_add,
+                                    "credits": credits_to_add,  # Legacy total field
+                                })
+                                logger.info(f"Added {credits_to_add} {credit_type} credits to user {user_id} from payment {payment_intent_id}")
                     except Exception as e:
                         logger.error(f"Failed to add credits to user: {str(e)}")
                 
@@ -439,29 +513,189 @@ class StripePaymentService:
         return {"status": "failed", "payment_intent_id": payment_intent_id, "error": error_message}
     
     async def _handle_checkout_completed(self, data: dict) -> Dict[str, Any]:
-        """Handle completed checkout session"""
+        """Handle completed checkout session (payment or subscription mode)"""
         session_id = data.get("id")
-        payment_intent_id = data.get("payment_intent")
-        
-        # Update payment record
-        await MongoDB.get_db().payments.update_one(
-            {"stripe_checkout_session_id": session_id},
-            {
-                "$set": {
-                    "stripe_payment_intent_id": payment_intent_id,
-                    "status": PaymentStatus.SUCCEEDED.value,
-                    "updated_at": datetime.utcnow()
-                }
-            }
-        )
-        
-        # Create order
-        payment = await MongoDB.get_db().payments.find_one({"stripe_checkout_session_id": session_id})
-        if payment:
-            await self._create_order(payment)
-        
-        logger.info(f"Checkout completed: {session_id}")
-        return {"status": "success", "session_id": session_id}
+        mode = data.get("mode", "payment")
+
+        if mode == "subscription":
+            # ── Subscription checkout ────────────────────────────────────────
+            metadata = data.get("metadata") or {}
+            user_id = metadata.get("user_id")
+            plan = metadata.get("plan")
+            billing_cycle = metadata.get("billing_cycle", "monthly")
+            subscription_id = metadata.get("subscription_id")
+            stripe_sub_id = data.get("subscription")
+
+            if user_id and plan:
+                subscription_end = datetime.utcnow() + (
+                    timedelta(days=365) if billing_cycle == "annual" else timedelta(days=30)
+                )
+                await service_client.update_user_subscription(user_id, {
+                    "subscription_plan": plan,
+                    "subscription_status": "active",
+                    "subscription_billing_cycle": billing_cycle,
+                    "subscription_start_date": datetime.utcnow(),
+                    "subscription_end_date": subscription_end,
+                    "stripe_subscription_id": stripe_sub_id,
+                })
+                if subscription_id:
+                    try:
+                        await MongoDB.get_db().subscriptions.update_one(
+                            {"_id": ObjectId(subscription_id)},
+                            {
+                                "$set": {
+                                    "status": "active",
+                                    "stripe_subscription_id": stripe_sub_id,
+                                    "stripe_checkout_session_id": session_id,
+                                    "updated_at": datetime.utcnow(),
+                                }
+                            },
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to update internal subscription record: {e}")
+
+            logger.info(f"Subscription checkout completed: {session_id}, user {user_id}, plan {plan}")
+            return {"status": "success", "session_id": session_id, "mode": "subscription"}
+
+        else:
+            # ── One-time payment checkout ────────────────────────────────────
+            payment_intent_id = data.get("payment_intent")
+            await MongoDB.get_db().payments.update_one(
+                {"stripe_checkout_session_id": session_id},
+                {
+                    "$set": {
+                        "stripe_payment_intent_id": payment_intent_id,
+                        "status": PaymentStatus.SUCCEEDED.value,
+                        "updated_at": datetime.utcnow(),
+                    }
+                },
+            )
+            payment = await MongoDB.get_db().payments.find_one({"stripe_checkout_session_id": session_id})
+            if payment:
+                await self._create_order(payment)
+
+            logger.info(f"Checkout completed: {session_id}")
+            return {"status": "success", "session_id": session_id}
+
+    async def _handle_subscription_updated(self, data: dict) -> Dict[str, Any]:
+        """Sync subscription status on plan change or state change."""
+        stripe_sub_id = data.get("id")
+        if not stripe_sub_id:
+            return {"status": "ignored", "reason": "no subscription id"}
+
+        # Fetch the subscription from Stripe to get current status and metadata
+        try:
+            sub = stripe.Subscription.retrieve(stripe_sub_id)
+        except stripe.error.StripeError as e:
+            logger.error(f"Failed to retrieve subscription {stripe_sub_id}: {e}")
+            return {"status": "error", "error": str(e)}
+
+        status = sub.get("status")  # active | past_due | canceled | ...
+        metadata = sub.get("metadata") or {}
+        user_id = metadata.get("user_id")
+
+        # Try to find user by stripe_subscription_id if metadata is missing user_id
+        if not user_id:
+            user = await service_client.get_user_by_stripe_subscription(stripe_sub_id)
+            if user:
+                user_id = str(user["_id"])
+
+        current_period_end = sub.get("current_period_end")
+        end_dt = datetime.utcfromtimestamp(current_period_end) if current_period_end else None
+        cancel_at_period_end = bool(sub.get("cancel_at_period_end"))
+
+        if user_id:
+            if cancel_at_period_end:
+                mapped_status = "pending_cancellation"
+            elif status in {"active", "trialing"}:
+                mapped_status = "active"
+            elif status in {"canceled", "unpaid", "incomplete_expired"}:
+                mapped_status = "cancelled"
+            else:
+                mapped_status = "expired"
+            await service_client.update_user_subscription(user_id, {
+                "subscription_status": mapped_status,
+                "subscription_end_date": end_dt,
+            })
+            await MongoDB.get_db().subscriptions.update_many(
+                {"stripe_subscription_id": stripe_sub_id},
+                {
+                    "$set": {
+                        "status": mapped_status,
+                        "updated_at": datetime.utcnow(),
+                    }
+                },
+            )
+
+        logger.info(f"Subscription updated: {stripe_sub_id}, status={status}, user={user_id}")
+        return {"status": "synced", "stripe_sub_id": stripe_sub_id, "sub_status": status}
+
+    async def _handle_subscription_invoice_paid(self, data: dict) -> Dict[str, Any]:
+        """Grant recurring credits when a subscription invoice is paid."""
+        stripe_sub_id = data.get("subscription")
+        invoice_id = data.get("id")
+        if not stripe_sub_id:
+            return {"status": "ignored", "reason": "no subscription id"}
+
+        sync_result = await self._handle_subscription_updated({"id": stripe_sub_id})
+
+        try:
+            sub = stripe.Subscription.retrieve(stripe_sub_id)
+        except stripe.error.StripeError as exc:
+            logger.error(f"Failed to retrieve subscription {stripe_sub_id} for invoice {invoice_id}: {exc}")
+            return {"status": "error", "error": str(exc)}
+
+        metadata = sub.get("metadata") or {}
+        user_id = metadata.get("user_id")
+        plan = metadata.get("plan")
+
+        if not user_id:
+            user = await service_client.get_user_by_stripe_subscription(stripe_sub_id)
+            if user:
+                user_id = str(user["_id"])
+                plan = plan or user.get("subscription_plan")
+
+        if user_id and plan and plan != "none":
+            try:
+                await service_client.update_user_credits(
+                    user_id,
+                    get_subscription_credit_grant(plan=plan if isinstance(plan, str) else plan),
+                )
+            except Exception as exc:
+                logger.error(f"Failed to grant subscription credits for invoice {invoice_id}: {exc}")
+                return {"status": "error", "error": str(exc)}
+
+        return {
+            "status": "granted",
+            "invoice_id": invoice_id,
+            "stripe_sub_id": stripe_sub_id,
+            "sync": sync_result,
+        }
+
+    async def _handle_subscription_deleted(self, data: dict) -> Dict[str, Any]:
+        """Deactivate subscription when cancelled/deleted in Stripe"""
+        stripe_sub_id = data.get("id")
+        metadata = data.get("metadata") or {}
+        user_id = metadata.get("user_id")
+
+        if not user_id:
+            user = await service_client.get_user_by_stripe_subscription(stripe_sub_id)
+            if user:
+                user_id = str(user["_id"])
+
+        if user_id:
+            await service_client.update_user_subscription(user_id, {
+                "subscription_plan": "none",
+                "subscription_status": "cancelled",
+                "subscription_cancelled_at": datetime.utcnow(),
+            })
+            await MongoDB.get_db().subscriptions.update_many(
+                {"stripe_subscription_id": stripe_sub_id},
+                {"$set": {"status": "cancelled", "updated_at": datetime.utcnow()}},
+            )
+
+        logger.info(f"Subscription deleted: {stripe_sub_id}, user={user_id}")
+        return {"status": "cancelled", "stripe_sub_id": stripe_sub_id}
     
     async def _handle_refund(self, data: dict) -> Dict[str, Any]:
         """Handle refund event"""
@@ -488,6 +722,10 @@ class StripePaymentService:
     
     async def _create_order(self, payment: dict) -> str:
         """Create an order record from a successful payment"""
+        existing_order = await MongoDB.get_db().orders.find_one({"payment_id": str(payment["_id"])})
+        if existing_order:
+            return str(existing_order["_id"])
+
         order_doc = {
             "user_id": payment["user_id"],
             "payment_id": str(payment["_id"]),
@@ -503,8 +741,35 @@ class StripePaymentService:
         
         result = await MongoDB.get_db().orders.insert_one(order_doc)
         order_id = str(result.inserted_id)
-        
-        logger.info(f"Created order {order_id} for user {payment['user_id']}")
+
+        # ── Library fulfillment ──────────────────────────────────────────────
+        # Collect book IDs from items list OR from metadata (PaymentIntent path)
+        book_ids: list = []
+        for item in payment.get("items", []):
+            bid = item.get("book_id") or item.get("bookId")
+            if bid:
+                book_ids.append(str(bid))
+
+        if not book_ids:
+            # PaymentIntent metadata may store comma-separated book_ids
+            raw = (payment.get("metadata") or {}).get("book_ids", "")
+            if raw:
+                book_ids = [b.strip() for b in raw.split(",") if b.strip()]
+
+        user_id = payment.get("user_id", "")
+        for book_id in book_ids:
+            try:
+                existing = await service_client.get_library_entry(user_id, book_id)
+                if not existing:
+                    await service_client.add_library_entry(
+                        user_id, book_id, progress=0, order_id=order_id,
+                        added_at=datetime.utcnow(),
+                    )
+                    logger.info(f"Added book {book_id} to library for user {user_id}")
+            except Exception as lib_err:
+                logger.error(f"Failed to add book {book_id} to library for user {user_id}: {lib_err}")
+
+        logger.info(f"Created order {order_id} for user {user_id}")
         return order_id
     
     # =========================================================================
@@ -601,11 +866,13 @@ class StripePaymentService:
                 raise ValueError("Either items or amount must be provided")
             
             # Verify user exists and has enough credits
-            user = await MongoDB.get_user_by_id(user_id)
+            user = await service_client.get_user_by_id(user_id)
             if not user:
                 raise ValueError("User not found")
             
-            user_credits = user.get("credits", 0)
+            basic_credits = user.get("basic_credits", 0)
+            premium_credits = user.get("premium_credits", 0)
+            user_credits = basic_credits + premium_credits
             if user_credits < total_credits:
                 raise ValueError(f"Insufficient credits. Required: {total_credits}, Available: {user_credits}")
             
@@ -627,25 +894,48 @@ class StripePaymentService:
             payment_id = str(result.inserted_id)
             
             # Deduct credits from user (update auth database)
-            await MongoDB.get_auth_db().users.update_one(
-                {"_id": ObjectId(user_id)},
-                {
-                    "$inc": {"credits": -total_credits},
-                    "$set": {"updated_at": datetime.utcnow()}
-                }
-            )
+            # Determine which typed credit field to decrement
+            # Check metadata for credit_type; fallback to basic_credits
+            meta = metadata or {}
+            credit_type = meta.get("credit_type")
+            inc_payload: dict = {"credits": -total_credits}
+
+            if credit_type == "premium":
+                premium_to_use = min(premium_credits, total_credits)
+                basic_to_use = total_credits - premium_to_use
+                if premium_to_use:
+                    inc_payload["premium_credits"] = -premium_to_use
+                if basic_to_use:
+                    inc_payload["basic_credits"] = -basic_to_use
+            elif credit_type == "basic":
+                basic_to_use = min(basic_credits, total_credits)
+                premium_to_use = total_credits - basic_to_use
+                if basic_to_use:
+                    inc_payload["basic_credits"] = -basic_to_use
+                if premium_to_use:
+                    inc_payload["premium_credits"] = -premium_to_use
+            else:
+                basic_to_use = min(basic_credits, total_credits)
+                premium_to_use = total_credits - basic_to_use
+                if basic_to_use:
+                    inc_payload["basic_credits"] = -basic_to_use
+                if premium_to_use:
+                    inc_payload["premium_credits"] = -premium_to_use
+
+            # Deduct credits from user via auth-service API
+            await service_client.update_user_credits(user_id, inc_payload)
             
             # Get updated credit balance
             remaining_credits = user_credits - total_credits
             
             # Create order
-            await self._create_order(payment_doc | {"_id": result.inserted_id})
+            order_id = await self._create_order(payment_doc | {"_id": result.inserted_id})
             
             logger.info(f"Credits payment processed: {payment_id} for user {user_id} - {total_credits} credits")
             
             return {
                 "payment_id": payment_id,
-                "order_id": payment_id,  # Using payment_id as order_id for now
+                "order_id": order_id,
                 "credits_deducted": total_credits,
                 "remaining_credits": remaining_credits,
                 "status": PaymentStatus.SUCCEEDED.value,
@@ -663,10 +953,31 @@ class StripePaymentService:
     async def get_payment_status(self, payment_id: str) -> Optional[dict]:
         """Get payment status from database"""
         try:
-            payment = await MongoDB.get_db().payments.find_one({"_id": ObjectId(payment_id)})
-            if payment:
-                payment["_id"] = str(payment["_id"])
-            return payment
+            payment = await self._find_payment(payment_id)
+            if not payment:
+                return None
+
+            if payment["status"] in {PaymentStatus.PENDING.value, PaymentStatus.PROCESSING.value}:
+                stripe_payment_intent_id = payment.get("stripe_payment_intent_id")
+                if stripe_payment_intent_id:
+                    intent = await self.get_payment_intent(stripe_payment_intent_id)
+                    mapped_status = self._map_stripe_payment_status(intent.status)
+                    if mapped_status.value != payment["status"]:
+                        await MongoDB.get_db().payments.update_one(
+                            {"_id": payment["_id"]},
+                            {
+                                "$set": {
+                                    "status": mapped_status.value,
+                                    "updated_at": datetime.utcnow(),
+                                }
+                            },
+                        )
+                        payment["status"] = mapped_status.value
+                        payment["updated_at"] = datetime.utcnow()
+                        if mapped_status == PaymentStatus.SUCCEEDED:
+                            await self._create_order(payment)
+
+            return self._serialize_payment(payment)
         except Exception as e:
             logger.error(f"Error getting payment status: {str(e)}")
             return None
@@ -677,8 +988,7 @@ class StripePaymentService:
             cursor = MongoDB.get_db().payments.find({"user_id": user_id}).sort("created_at", -1).limit(limit)
             payments = []
             async for payment in cursor:
-                payment["_id"] = str(payment["_id"])
-                payments.append(payment)
+                payments.append(self._serialize_payment(payment))
             return payments
         except Exception as e:
             logger.error(f"Error getting user payments: {str(e)}")

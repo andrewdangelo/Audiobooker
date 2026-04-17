@@ -41,8 +41,8 @@ app.add_middleware(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Include routers
-app.include_router(proxy_router.router)
+# Include routers - mount at the API prefix so frontend URL matches
+app.include_router(proxy_router.router, prefix=settings.API_V1_PREFIX)
 
 # ==================== LIFECYCLE EVENTS ====================
 

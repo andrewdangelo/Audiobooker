@@ -7,9 +7,16 @@
 
 import AudiobookCard from './AudiobookCard'
 import { useAppSelector, selectFilteredAudiobooks } from '@/store'
+import type { Audiobook } from '@/store/slices/audiobooksSlice'
 
-export default function AudiobookList() {
-  const audiobooks = useAppSelector(selectFilteredAudiobooks)
+interface AudiobookListProps {
+  /** If provided, render this specific book list instead of the filtered Redux state */
+  books?: Audiobook[]
+}
+
+export default function AudiobookList({ books: booksProp }: AudiobookListProps) {
+  const filteredBooks = useAppSelector(selectFilteredAudiobooks)
+  const audiobooks = booksProp ?? filteredBooks
   
   if (audiobooks.length === 0) {
     return (
@@ -30,6 +37,10 @@ export default function AudiobookList() {
           duration={book.duration}
           coverImage={book.coverImage}
           genre={book.genre}
+          isPremium={book.isPremium}
+          purchaseType={book.purchaseType}
+          status={book.status}
+          conversion={book.conversion}
         />
       ))}
     </div>

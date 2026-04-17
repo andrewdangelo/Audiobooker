@@ -28,6 +28,9 @@ wheels/
 .env.local
 .env.*.local
 
+venv/
+.venv/
+
 # Logs
 logs/
 *.log

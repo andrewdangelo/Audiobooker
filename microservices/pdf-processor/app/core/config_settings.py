@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     
     # Environment
     ENVIRONMENT: str = Field(default="development", description="Environment: development, staging, production")
-    PORT: int = Field(default=8001, description="Service port")
+    PORT: int = Field(default=8004, description="Service port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     DEBUG: bool = True
     TEST_VERSION: str = Field(default="Check ENV Version...", description="Application test version")
@@ -67,7 +67,29 @@ class Settings(BaseSettings):
     LLM_DISCOVERY_CHARS: int = Field(default=20000, description="Characters to use for character discovery")
     LLM_DELAY_BETWEEN_REQUESTS: float = Field(default=3.0, description="Seconds to wait between LLM requests")
     ENABLE_LLM_CHUNKING: bool = Field(default=False, description="Enable automatic LLM-based speaker chunking")
-    
+
+    # Internal service-to-service auth key
+    INTERNAL_SERVICE_KEY: str = Field(
+        default="change-me-internal-key",
+        description="Shared secret used to authenticate inter-service HTTP calls"
+    )
+
+    # Backend internal API (same origin as backend FastAPI app.api.v1 prefix)
+    BACKEND_SERVICE_BASE_URL: str = Field(
+        default="http://127.0.0.1:8002/api/v1",
+        description="Base URL of the backend service (for POST /internal/conversion/complete)",
+    )
+
+    # Optional pipeline health checks (full URL to a GET endpoint, e.g. /health)
+    AI_SERVICE_HEALTH_URL: Optional[str] = Field(
+        default=None,
+        description="If set, pipeline pings this URL between PDF/LLM and TTS stages",
+    )
+    TTS_SERVICE_HEALTH_URL: Optional[str] = Field(
+        default=None,
+        description="If set, pipeline pings this URL before backend finalization",
+    )
+
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         """Validate environment values"""

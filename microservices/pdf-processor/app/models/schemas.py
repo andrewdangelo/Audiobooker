@@ -4,7 +4,7 @@ Pydantic Models and Schemas
 Request/Response models for API endpoints.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -25,21 +25,22 @@ class ProcessPDFRequest(BaseModel):
     output_format: OutputFormat = Field(default=OutputFormat.JSON, description="Output format for processed text")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata to attach")
     
-    @validator("r2_pdf_path")
-    def validate_r2_pdf_path(cls, v):
-        """Validate R2 key format"""
+    @field_validator("r2_pdf_path")
+    @classmethod
+    def validate_r2_pdf_path(cls, v: str):
+        """Validate R2 key format (PDF or EPUB)."""
         if not v or not v.strip():
             raise ValueError("r2_pdf_path cannot be empty")
-        if not v.endswith(".pdf"):
-            raise ValueError("r2_pdf_path must point to a PDF file (.pdf extension)")
+        lower = v.strip().lower()
+        if not (lower.endswith(".pdf") or lower.endswith(".epub")):
+            raise ValueError("r2_pdf_path must end with .pdf or .epub")
         return v.strip()
-    
-    @validator("chunk_overlap")
-    def validate_overlap(cls, v, values):
-        """Ensure overlap is less than chunk size"""
-        if "chunk_size" in values and v >= values["chunk_size"]:
+
+    @model_validator(mode="after")
+    def chunk_overlap_lt_size(self):
+        if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be less than chunk_size")
-        return v
+        return self
 
 
 class ProcessPDFResponse(BaseModel):
@@ -61,6 +62,11 @@ class JobStatusResponse(BaseModel):
     completed_at: Optional[str] = Field(None, description="Job completion timestamp")
     result: Optional[Dict[str, Any]] = Field(None, description="Processing results if completed")
     error: Optional[str] = Field(None, description="Error message if failed")
+    pipeline_stage: Optional[str] = Field(
+        None,
+        description="Unified pipeline stage for UI: pdf_processing, ai_enrichment, tts, backend_sync, completed, …",
+    )
+    audiobook_id: Optional[str] = Field(None, description="Backend library book id after successful sync")
 
 
 class HealthResponse(BaseModel):

@@ -7,6 +7,7 @@ __author__ = "Mohammad Saifan"
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import logging
+import uuid
 from bson import ObjectId
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,11 @@ class MongoDBService:
     def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new document"""
         try:
+            # Auto-generate an 'id' field if not provided, to satisfy any
+            # unique index on the 'id' field and keep documents identifiable.
+            if 'id' not in data:
+                data['id'] = str(uuid.uuid4())
+
             # Add timestamps
             now = datetime.utcnow()
             data['created_at'] = now
@@ -43,9 +49,23 @@ class MongoDBService:
             raise e
 
     def get_by_id(self, item_id: str) -> Optional[Dict[str, Any]]:
-        """Get document by ID"""
+        """Get document by ID.
+
+        Tries MongoDB ObjectId first (for documents whose primary key is a
+        BSON ObjectId).  Falls back to querying the plain-string 'id' field
+        for documents (e.g. books, users) that store a UUID in an 'id' field
+        rather than relying on '_id'.
+        """
         try:
-            return self.collection.find_one({"_id": ObjectId(item_id)})
+            obj_id = ObjectId(item_id)
+            doc = self.collection.find_one({"_id": obj_id})
+            if doc is not None:
+                return doc
+        except Exception:
+            pass  # item_id is not a valid ObjectId – try the 'id' string field
+
+        try:
+            return self.collection.find_one({"id": item_id})
         except Exception as e:
             logger.error(f"Error fetching document from {self.collection_name}: {e}")
             return None

@@ -20,8 +20,9 @@
 
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ShoppingCart, Check, Plus, Minus } from 'lucide-react'
+import { ShoppingCart, Check, Plus, Minus, Crown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
@@ -43,6 +44,8 @@ interface AddToCartModalProps {
   isOpen: boolean
   onClose: () => void
   onOpenCart?: () => void
+  /** Which edition the user selected on the detail page */
+  edition?: 'basic' | 'premium'
 }
 
 // ============================================================================
@@ -60,12 +63,17 @@ function formatPrice(cents: number): string {
 // MAIN COMPONENT
 // ============================================================================
 
-export function AddToCartModal({ book, isOpen, onClose, onOpenCart }: AddToCartModalProps) {
+export function AddToCartModal({ book, isOpen, onClose, onOpenCart, edition = 'basic' }: AddToCartModalProps) {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
   
   const [quantity, setQuantity] = useState(1)
   const [isAdded, setIsAdded] = useState(false)
+  
+  // Resolve edition-specific price/credits
+  const isPremiumEdition = edition === 'premium' && !!book?.isPremium
+  const effectivePrice = isPremiumEdition && book?.premiumPrice ? book.premiumPrice : (book?.price ?? 0)
+  const effectiveCredits = isPremiumEdition ? (book?.premiumCredits ?? 2) : (book?.credits ?? 1)
   
   // Check if item is already in cart
   const isInCart = useAppSelector((state) => 
@@ -97,9 +105,10 @@ export function AddToCartModal({ book, isOpen, onClose, onOpenCart }: AddToCartM
     
     dispatch(addToCart({
       bookId: book.id,
-      price: book.price,
-      credits: book.credits,
+      price: effectivePrice,
+      credits: effectiveCredits,
       quantity,
+      edition: isPremiumEdition ? 'premium' : 'basic',
     }))
     
     setIsAdded(true)
@@ -163,21 +172,35 @@ export function AddToCartModal({ book, isOpen, onClose, onOpenCart }: AddToCartM
                     Narrated by {book.narrator}
                   </p>
                 )}
+
+                {/* Edition badge */}
+                {isPremiumEdition ? (
+                  <Badge className="mt-2 bg-amber-500/15 text-amber-600 border-amber-400/40 hover:bg-amber-500/20">
+                    <Crown className="h-3 w-3 mr-1" />
+                    Theatrical Edition
+                  </Badge>
+                ) : (
+                  book.isPremium && (
+                    <Badge variant="secondary" className="mt-2">
+                      Standard Edition
+                    </Badge>
+                  )
+                )}
                 
                 <Separator className="my-3" />
                 
                 {/* Pricing */}
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-lg">{formatPrice(book.price)}</span>
-                    {book.originalPrice && book.originalPrice > book.price && (
+                    <span className="font-semibold text-lg">{formatPrice(effectivePrice)}</span>
+                    {!isPremiumEdition && book.originalPrice && book.originalPrice > book.price && (
                       <span className="text-sm text-muted-foreground line-through">
                         {formatPrice(book.originalPrice)}
                       </span>
                     )}
                   </div>
                   <p className="text-sm text-primary">
-                    or {book.credits} credit{book.credits !== 1 ? 's' : ''}
+                    or {effectiveCredits} credit{effectiveCredits !== 1 ? 's' : ''}
                   </p>
                 </div>
               </div>
@@ -265,7 +288,8 @@ export function AddToCartModal({ book, isOpen, onClose, onOpenCart }: AddToCartM
                   Quantity: <span className="font-medium">{quantity}</span>
                 </p>
                 <p className="text-sm">
-                  Total: <span className="font-semibold">{formatPrice(book.price * quantity)}</span>
+                  Total: <span className="font-semibold">{formatPrice(effectivePrice * quantity)}</span>
+                  {isPremiumEdition && <span className="text-xs text-amber-600 ml-1">(Theatrical)</span>}
                 </p>
               </div>
             </div>
