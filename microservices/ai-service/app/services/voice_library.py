@@ -97,7 +97,56 @@ class VoiceLibraryManager:
         duration = len(clip) / sr
         return out_buffer, duration
 
+<<<<<<< Updated upstream
     async def add_voice(self, input_audio: io.BytesIO, filename: str, start_time: str = "00:00"):
+=======
+        return out_buffer, len(clip) / sr
+
+    async def _upload_to_r2(self, buffer: io.BytesIO, voice_id: str) -> None:
+        """Upload processed audio buffer to R2."""
+        buffer.seek(0)
+        async with self.r2_session.client(
+            "s3",
+            endpoint_url=(
+                f"https://{self.r2_config['account_id']}.r2.cloudflarestorage.com"
+            ),
+            aws_access_key_id=self.r2_config["access_key"],
+            aws_secret_access_key=self.r2_config["secret_key"],
+        ) as s3:
+            await s3.put_object(
+                Bucket=self.r2_config["bucket"],
+                Key=f"voice_library/processed_voice_clips/{voice_id}.wav",
+                Body=buffer.read(),
+                ContentType="audio/wav"
+            )
+
+    async def _delete_from_r2(self, voice_id: str) -> None:
+        """Delete audio file from R2."""
+        async with self.r2_session.client(
+            "s3",
+            endpoint_url=(
+                f"https://{self.r2_config['account_id']}.r2.cloudflarestorage.com"
+            ),
+            aws_access_key_id=self.r2_config["access_key"],
+            aws_secret_access_key=self.r2_config["secret_key"],
+        ) as s3:
+            await s3.delete_object(
+                Bucket=self.r2_config["bucket"],
+                Key=f"voice_library/processed_voice_clips/{voice_id}.wav"
+            )
+
+    # ------------------------------------------------------------------
+    # CRUD
+    # ------------------------------------------------------------------
+
+    async def add_voice(
+        self,
+        input_audio: io.BytesIO,
+        filename: str,
+        start_time: str = "00:00",
+        is_standard: bool = False,
+    ) -> str:
+>>>>>>> Stashed changes
         """
         Orchestrates: Process -> Describe -> Embed -> Upload -> Save
         """

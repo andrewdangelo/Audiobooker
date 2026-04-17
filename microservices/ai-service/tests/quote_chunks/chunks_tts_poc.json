@@ -1,0 +1,12 @@
+{
+  "audiobook_id": "poc-test-001",
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "voice_id": "bf2306f4-d7b1-42ca-9add-d74fd991dc16",
+      "quote": "It was the best of times, it was the worst of times, it was the age of wisdom, it was the age of foolishness.",
+      "emotion": "narrative, reflective, measured",
+      "emotion_strength": 0.5
+    }
+  ]
+}
