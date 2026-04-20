@@ -4,35 +4,42 @@ PDF Processing Service
 Core service for extracting and processing text from PDFs.
 """
 __author__ = "Mohammad Saifan"
+__contributor__ = "Andrew D'Angelo"
 
 import io
 import re
 import time
 import asyncio
 import html as html_module
+import unicodedata
 from typing import (Dict, Any, List)
 from datetime import datetime
-
 import ebooklib
-from ebooklib import epub
-import fitz  # PyMuPDF
-from PIL import Image
 import pytesseract
+from ebooklib import epub
+import fitz  
+from PIL import Image
 import easyocr
 import numpy as np
-
+import re
 from PyPDF2 import PdfReader
+
+
 from PyPDF2.errors import PdfReadError
 
 from app.core.logging_config import Logger
 from app.core.redis_manager import redis_manager
 from app.core.config_settings import settings
+
 from app.utils.chunker import TextChunker
 
 from app.services import r2_service
 from app.services.llm_speaker_chunker import SpeakerChunker
 from app.services.pipeline_client import notify_backend_conversion_complete, ping_service_health
+
 from app.database import (database, db_engine)
+
+from app.models.db_models import Collections
 
 
 class PDFProcessorService(Logger):
@@ -47,11 +54,10 @@ class PDFProcessorService(Logger):
         self.chunker = TextChunker()
         self.logger.info("PDF Processor Service initialized")
     
-    # ==================== Redis Job Manageer ====================
+    # ==================== Redis Job Manager ====================
 
     async def get_all_jobs(self) -> Dict[str, Dict[str, Any]]:
         """Retrieve all jobs from Redis"""
-
         pattern = f"{redis_manager.JOB_PREFIX}*"
         keys = await redis_manager.scan_keys(pattern)
         jobs = {}
@@ -74,7 +80,6 @@ class PDFProcessorService(Logger):
         key = f"{redis_manager.JOB_PREFIX}:{job_id}"
         for field, value in updates.items():
             await redis_manager.hset(key, field, value)
-        # Refresh TTL on each update
         await redis_manager.expire(key, redis_manager.JOB_TTL)
 
     async def create_job(self, job_id: str, job_data: Dict[str, Any]) -> None:
@@ -85,7 +90,7 @@ class PDFProcessorService(Logger):
         await redis_manager.expire(key, redis_manager.JOB_TTL)
     
     # ==================== PDF PROCESSOR TASKS ====================
-    
+
     def _strip_html_to_text(self, html: str) -> str:
         t = re.sub(r"(?is)<script.*?>.*?</script>", " ", html)
         t = re.sub(r"(?is)<style.*?>.*?</style>", " ", t)
@@ -150,17 +155,9 @@ class PDFProcessorService(Logger):
             self._process_epub_sync, epub_data, chunk_size, chunk_overlap, output_format
         )
 
-    async def process_pdf_task(
-        self,
-        job_id: str,
-        user_id: str,
-        r2_key: str,
-        chunk_size: int,
-        chunk_overlap: int,
-        output_format: str,
-        credit_type: str = "basic",
-    ):
-        """Background task for processing a PDF or EPUB from R2."""
+
+    async def process_pdf_task(self, job_id: str, user_id: str, r2_key: str, chunk_size: int, chunk_overlap: int, output_format: str, credit_type: str = "basic"):
+        """Background task for processing a PDF or EPUB from R2"""
         try:
             self.logger.info(f"Starting book processing for job {job_id}, user {user_id}")
             
@@ -217,18 +214,16 @@ class PDFProcessorService(Logger):
                     })
                     
                     # Initialize LLM chunker
-                    llm_chunker = SpeakerChunker(
-                        api_key=settings.HF_TOKEN,
-                        model=settings.LLM_MODEL,
-                        base_url=settings.HF_ENDPOINT_URL
-                    )
+                    llm_chunker = SpeakerChunker()
                     
-                    # Warmup endpoint if serverless mode is enabled
-                    """ if settings.LLM_SERVERLESS:
+                    if settings.LLM_SERVERLESS:
                         self.logger.info("Warming up serverless endpoint...")
-                        llm_chunker.warmup_endpoint() """
+                        warmup = llm_chunker.warmup_endpoint() 
+                        if not warmup:
+                            return {
+                                "Status": "LLM Not responsive!"
+                            }
                     
-                    # Track progress for job updates
                     llm_progress = {"last_update": None}
                     
                     def progress_callback(progress_info: dict):
@@ -312,9 +307,7 @@ class PDFProcessorService(Logger):
 
             # Create processed-audiobook record in pdf-processor Mongo (processing audit)
             self.logger.info(f"Creating database record for job {job_id}")
-            from app.database import database, db_engine
-            from app.models.db_models import Collections
-
+            
             db_func = database.get_db()
             db = db_func()
             audiobook_service = db_engine.MongoDBService(db, Collections.PROCESSED_AUDIOBOOKS)
@@ -464,69 +457,179 @@ class PDFProcessorService(Logger):
             self.logger.error(f"PDF processing failed: {str(e)}", exc_info=True)
             raise Exception(f"PDF processing failed: {str(e)}")
 
+    def _clean_extracted_text(self, text: str) -> str:
+        """
+        Clean up of extracted text from PDF:
+        """
+        if not text:
+            return ""
+
+        # Remove null bytes
+        text = text.replace('\x00', '')
+
+        # Remove soft hyphens (U+00AD)
+        text = text.replace('\xad', '')
+
+        # --- Explicit Unicode → ASCII translation table ---
+        UNICODE_TO_ASCII = {
+            # Curly / smart quotes
+            '\u2018': "'",
+            '\u2019': "'",
+            '\u201a': "'",
+            '\u201b': "'",
+            '\u201c': '"',
+            '\u201d': '"',
+            '\u201e': '"',
+            '\u201f': '"',
+            '\u2039': '<',
+            '\u203a': '>',
+            '\u00ab': '"',
+            '\u00bb': '"',
+            # Dashes
+            '\u2012': '-',
+            '\u2013': '-',
+            '\u2014': '--',
+            '\u2015': '--',
+            '\u2212': '-',
+            # Spaces and separators
+            '\u00a0': ' ',
+            '\u2002': ' ',
+            '\u2003': ' ',
+            '\u2004': ' ',
+            '\u2005': ' ',
+            '\u2009': ' ',
+            '\u200a': ' ',
+            '\u200b': '',
+            '\u200c': '',
+            '\u200d': '',
+            '\ufeff': '',
+            # Line/paragraph separators
+            '\u2028': '\n',
+            '\u2029': '\n\n',
+            # Ellipsis
+            '\u2026': '...',
+            # Bullets
+            '\u2022': '-',
+            '\u2023': '-',
+            '\u25cf': '-',
+            '\u25e6': '-',
+            # Misc typographic
+            '\u2122': '(TM)',
+            '\u00ae': '(R)',
+            '\u00a9': '(C)',
+            '\u00b7': '.',
+            '\u2044': '/',
+        }
+        translation_table = str.maketrans(UNICODE_TO_ASCII)
+        text = text.translate(translation_table)
+
+        # Normalize remaining ligatures and compatibility forms
+        text = unicodedata.normalize('NFKC', text)
+
+        # Normalize line endings
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+
+        # Rejoin mid-word hyphen breaks (e.g. "some-\nthing" → "something")
+        text = re.sub(r'-\n(\S)', r'\1', text)
+
+        # Collapse single newlines that split what should be a continuous sentence,
+        # but preserve paragraph breaks (double newlines)
+        text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
+
+        # --- Fix missing spaces from PDF block merging ---
+        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+
+        # 2. Closing punctuation immediately followed by a letter with no space
+        text = re.sub(r'([.!?][\'"]?)([A-Za-z])', r'\1 \2', text)
+
+        # 3. Comma/semicolon/colon immediately followed by a letter
+        text = re.sub(r'([,;:])([A-Za-z])', r'\1 \2', text)
+
+        # Preserve paragraph breaks but collapse excessive ones
+        text = re.sub(r'\n{3,}', '\n\n', text)
+
+        # Collapse multiple spaces/tabs on a single line to one space
+        text = re.sub(r'[ \t]+', ' ', text)
+
+        # Strip leading/trailing whitespace per line
+        lines = [line.strip() for line in text.split('\n')]
+        text = '\n'.join(lines)
+
+        return text.strip()
+
     def _extract_text_from_pdf(self, pdf_data: bytes) -> Dict[str, Any]:
         """
-        Extract text from PDF bytes with automatic OCR for scanned PDFs
-        
-        Args:
-            pdf_data: PDF file as bytes
-        
-        Returns:
-            Dict with full_text, page_map, total_pages, and metadata
+        Extract text from PDF bytes with automatic OCR for scanned PDFs.
+        Preserves paragraph structure for accurate chunking downstream.
+
+        OCR fallback logic:
+        - Only triggers when PyMuPDF finds zero text content on a page AND
+            the page contains at least one image object — i.e. it's a scanned page.
+        - Legitimate short-text pages (titles, copyright, chapter breaks) are
+            never sent to OCR regardless of character count.
         """
         pdf = fitz.open(stream=pdf_data, filetype="pdf")
-        
+
         full_text_parts = []
         page_map = []
         current_pos = 0
-        
+
         for page_num, page in enumerate(pdf, start=1):
-            # Try normal text extraction first
-            text = page.get_text("text")
-            
-            # If too little text, use OCR
-            if len(text.strip()) < 50:
-                try:
-                    self.logger.info(f"Performing OCR on page {page_num}")
-                    
-                    # Convert page to image at 300 DPI for better OCR
-                    mat = fitz.Matrix(300/72, 300/72)
-                    pix = page.get_pixmap(matrix=mat)
-                    
-                    # Convert pixmap to PIL Image for pytesseract
-                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    
-                    # Run OCR
-                    text = pytesseract.image_to_string(img)
-                    
-                except Exception as e:
-                    self.logger.error(f"OCR failed for page {page_num}: {e}")
-                    text = ""
-            
-            # Clean up whitespace
-            cleaned_text = " ".join(text.split()) if text else ""
-            
+            blocks = page.get_text("blocks")
+
+            # Separate text blocks (type 0) from image blocks (type 1)
+            text_blocks = [b for b in blocks if b[6] == 0 and b[4].strip()]
+            image_blocks = [b for b in blocks if b[6] == 1]
+
+            raw_text = ""
+            used_ocr = False
+
+            if text_blocks:
+                # Normal text extraction — trust PyMuPDF completely
+                raw_text = "\n\n".join(
+                    b[4] for b in sorted(text_blocks, key=lambda b: (b[1], b[0]))
+                )
+            else:
+                has_images = len(image_blocks) > 0 or len(page.get_images(full=True)) > 0
+
+                if has_images:
+                    try:
+                        self.logger.info(
+                            f"Page {page_num}: no text layer found but images present — falling back to OCR"
+                        )
+                        raw_text = self._ocr_pdf_page(pdf_data, page_num - 1)
+                        used_ocr = True
+                    except Exception as e:
+                        self.logger.error(f"OCR failed for page {page_num}: {e}")
+                        raw_text = ""
+                else:
+                    self.logger.debug(f"Page {page_num}: blank page, skipping OCR")
+
+            if not used_ocr and text_blocks:
+                self.logger.debug(
+                    f"Page {page_num}: extracted {sum(1 for c in raw_text if c.isalnum())} alnum chars via text layer"
+                )
+
+            cleaned_text = self._clean_extracted_text(raw_text)
+
             start_pos = current_pos
             end_pos = current_pos + len(cleaned_text)
-            
-            page_map.append(
-                {
-                    "page": page_num,
-                    "start": start_pos,
-                    "end": end_pos,
-                    "char_count": len(cleaned_text)
-                }
-            )
-            
+
+            page_map.append({
+                "page": page_num,
+                "start": start_pos,
+                "end": end_pos,
+                "char_count": len(cleaned_text)
+            })
+
             full_text_parts.append(cleaned_text)
-            current_pos = end_pos + 1
-        
-        # Extract metadata
+            current_pos = end_pos + 2
+
         metadata = pdf.metadata or {}
-        
         pdf.close()
-        combined_text = "\n".join(full_text_parts)
-        
+
+        combined_text = "\n\n".join(full_text_parts)
+
         return {
             "full_text": combined_text,
             "page_map": page_map,
@@ -544,25 +647,16 @@ class PDFProcessorService(Logger):
 
     def _ocr_pdf_page(self, pdf_data: bytes, page_index: int) -> str:
         """
-        Perform OCR on a specific PDF page using EasyOCR
-        
-        Args:
-            pdf_data: PDF file as bytes
-            page_index: Zero-based page index
-        
-        Returns:
-            Extracted text from the page
+        Perform OCR on a specific PDF page using EasyOCR.
         """
         try:
             pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
             page = pdf_document[page_index]
 
-            # Render page to image at 300 DPI
             mat = fitz.Matrix(300/72, 300/72)
             pix = page.get_pixmap(matrix=mat)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            # EasyOCR extraction
             reader = easyocr.Reader(['en'], gpu=False)
             text_results = reader.readtext(np.array(img), detail=0)
             text = "\n".join(text_results)
@@ -574,47 +668,3 @@ class PDFProcessorService(Logger):
         except Exception as e:
             self.logger.error(f"OCR failed for page {page_index + 1}: {str(e)}")
             return ""
-    
-    def _extract_metadata(self, reader: PdfReader) -> Dict[str, Any]:
-        """
-        Extract metadata from PDF
-        
-        Args:
-            reader: PdfReader instance
-        
-        Returns:
-            Metadata dict
-        """
-        metadata = {}
-        
-        try:
-            if reader.metadata:
-                for key, value in reader.metadata.items():
-                    # Clean metadata keys (remove leading slashes)
-                    clean_key = key.lstrip('/')
-                    metadata[clean_key] = str(value) if value else None
-        except Exception as e:
-            self.logger.warning(f"Failed to extract metadata: {str(e)}")
-        
-        return metadata
-    
-    def _clean_text(self, text: str) -> str:
-        """
-        Clean extracted text
-        
-        Args:
-            text: Raw extracted text
-        
-        Returns:
-            Cleaned text
-        """
-        # Remove excessive whitespace
-        text = ' '.join(text.split())
-        
-        # Remove null bytes
-        text = text.replace('\x00', '')
-        
-        # Normalize line breaks
-        text = text.replace('\r\n', '\n').replace('\r', '\n')
-        
-        return text.strip()

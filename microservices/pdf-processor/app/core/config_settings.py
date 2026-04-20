@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     # LLM Configuration (for speaker chunking via Hugging Face endpoint)
     HF_ENDPOINT_URL: str = Field(default="https://y23p40p55t1z1xpe.us-east-1.aws.endpoints.huggingface.cloud/v1", description="Hugging Face Inference Endpoint URL")
     HF_TOKEN: Optional[str] = Field(default=None, description="Hugging Face API token for LLM chunking")
+    INTERNAL_LLM_BASE_URL: Optional[str] = Field(default=None, description="INTERNAL_LLM_BASE_URL")
     LLM_MODEL: str = Field(default="FruitClamp/qwen-finetuned", description="Model name for speaker chunking")
     LLM_SERVERLESS: bool = Field(default=False, description="Serverless endpoint mode - will ping to wake up before processing")
     LLM_CONCURRENCY: int = Field(default=1, description="Number of concurrent LLM requests (1 recommended for rate limits)")

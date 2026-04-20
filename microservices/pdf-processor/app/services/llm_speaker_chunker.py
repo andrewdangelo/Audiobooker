@@ -1,19 +1,8 @@
 """
-LLLM-based Speaker Tagging Service v2 (High-Performance Async Architecture)
-
-Optimizations over v1:
-1. AsyncIO + httpx for non-blocking I/O (50+ concurrent requests vs 5 threads)
-2. Heuristic Anchoring: Pre-tags 30-50% of quotes locally via regex patterns
-3. Pipe-Delimited Output: 3x more token-efficient than JSON, eliminates truncation
-4. Larger batches: 4000 tokens vs 2000 (fewer API calls)
-
-Key Features (preserved from v1):
-- Smart Splitting: Paragraph-aware, handles multi-paragraph quotes
-- Local Narration Tagging: Narration pre-assigned to narrator without LLM
-- Adaptive Batching: Token-budget packing on quote-only units
-- First Person Handling: Correctly attributes narration to protagonist
+LLM Chunker — uses internal /chat and /web-rag endpoints
 """
 __author__ = "Andrew D'Angelo"
+__contributor__ = "Mohammad Saifan"
 
 import asyncio
 import json
@@ -23,30 +12,33 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable, Tuple, Set
 
 import httpx
-from openai import OpenAI  # Sync client for warmup/primer only
 from app.core.logging_config import Logger
 from app.core.config_settings import settings
 
 
-# -----------------------------
+# ---------------------------------------------------------------------------
 # Configuration
-# -----------------------------
+# ---------------------------------------------------------------------------
 
-DEFAULT_MODEL = "FruitClamp/qwen-finetuned"
-# Token budget increased since pipe-delimited output is 3x smaller than JSON
-BATCH_TOKEN_BUDGET = 4000
-CHARS_PER_TOKEN = 4
-SYSTEM_PROMPT_OVERHEAD_TOKENS = 400  # Smaller prompt with pipe format
-CONTEXT_OVERLAP_UNITS = 3
-# High concurrency with async — no OS thread overhead
-MAX_CONCURRENT_REQUESTS = 20
-# Timeout for individual API calls
-REQUEST_TIMEOUT_SECONDS = 120
+DEFAULT_MODEL                 = "@cf/openai/gpt-oss-120b"
+DEFAULT_PROVIDER              = "cf"
 
+BATCH_TOKEN_BUDGET            = 2000 #800
+CHARS_PER_TOKEN               = 4
+MAX_CONCURRENT_REQUESTS       = 20
+REQUEST_TIMEOUT_SECONDS       = 60
 
-# -----------------------------
-# Speech verb patterns for heuristic anchoring
-# -----------------------------
+MAX_UNIT_CHARS                = 600
+MAX_QUOTE_CHARS_IN_PROMPT     = 150
+MAX_CONTEXT_CHARS_IN_PROMPT   = 200
+
+SCENE_WINDOW_CHARS   = 1250   
+SCENE_OVERLAP_CHARS  = 200  
+MAX_QUOTES_PER_SCENE = 4
+
+# ---------------------------------------------------------------------------
+# Speech-verb regex
+# ---------------------------------------------------------------------------
 SPEECH_VERBS = (
     r"said|says|asked|asks|replied|replies|answered|answers|"
     r"shouted|shouts|whispered|whispers|muttered|mutters|"
@@ -60,21 +52,25 @@ SPEECH_VERBS = (
     r"began|begins|went on|interrupted|interrupts|"
     r"inquired|inquires|wondered|wonders|observed|observes|"
     r"commented|comments|noted|notes|remarked|remarks|"
-    r"admitted|admits|agreed|agrees|protested|protests"
+    r"admitted|admits|agreed|agrees|protested|protests|"
+    r"suggested|suggests|explained|explains|insisted|insists|"
+    r"responded|responds|retorted|retorts|countered|counters|"
+    r"confirmed|confirms|denied|denies|pleaded|pleads"
 )
 
 
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
 @dataclass
 class TextUnit:
-    """An atomic unit of text (either a quote or a piece of narration)."""
     uid: int
     text: str
     is_quote: bool
     new_paragraph: bool = False
     continuation_quote: bool = False
-    source_chunk_ids: List[int] = field(default_factory=list)
-    predicted_speaker: str = "Narrator"
-    # New: confidence level for heuristic-tagged units
+    chunk_id: Optional[int] = None
     heuristic_confidence: float = 0.0
 
 
@@ -83,120 +79,310 @@ class Character:
     name: str
     gender: str
     description: str
+    mentioned_count: int = 0
+    aliases: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# Tokenisation helpers
+# Token helpers
 # ---------------------------------------------------------------------------
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // CHARS_PER_TOKEN)
 
-
 def _estimate_unit_prompt_tokens(unit: TextUnit) -> int:
-    overhead = 10  # Smaller with pipe format
-    return overhead + _estimate_tokens(unit.text)
+    quote_chars   = min(len(unit.text), MAX_QUOTE_CHARS_IN_PROMPT)
+    context_chars = MAX_CONTEXT_CHARS_IN_PROMPT * 2
+    return 20 + _estimate_tokens("x" * (quote_chars + context_chars))
 
+
+# ===========================================================================
+# Internal API wrapper
+# ===========================================================================
+
+class _InternalAPI:
+    """Routes all LLM calls through the internal /chat and /web-rag endpoints."""
+
+    def __init__(self, base_url: str, model: str, provider: str):
+        self.chat_url = f"{base_url}/ai/chat"
+        self.rag_url  = f"{base_url}/ai/chat/web-rag"
+        self.cloudflare_structured_url = f"{base_url}/chat/cloudflare-structured"
+        self.model    = model
+        self.provider = provider
+
+    def _chat_payload(self, prompt_messages: List[List[str]], inputs: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "provider":        self.provider,
+            "preset": "chat-knowledge",
+            "prompt_messages": prompt_messages,
+            # LangChain ChatPromptTemplate requires a non-empty inputs dict
+        }
+
+    def _rag_payload(self, prompt_messages: List[List[str]], inputs: Dict[str, Any],
+                     search_query_template: str) -> Dict[str, Any]:
+        return {
+            "provider":              self.provider,
+            "preset":       "chat-knowledge",
+            "prompt_messages":       prompt_messages,
+            "search_query_template": None,
+        }
+
+    # --- sync ---
+
+    def sync_chat(self, prompt_messages: List[List[str]], inputs: Dict[str, Any],
+                  timeout: int = REQUEST_TIMEOUT_SECONDS) -> str:
+        payload = self._chat_payload(prompt_messages, inputs)
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(self.chat_url, json=payload)
+            if not resp.is_success:
+                raise httpx.HTTPStatusError(
+                    f"Chat {resp.status_code}: {resp.text[:300]}",
+                    request=resp.request, response=resp)
+            return resp.json()["answer"]
+
+    def sync_rag_chat(self, prompt_messages: List[List[str]], inputs: Dict[str, Any],
+                      search_query_template: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> Tuple[str, str]:
+        payload = self._rag_payload(prompt_messages, inputs, search_query_template)
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(self.rag_url, json=payload)
+            if not resp.is_success:
+                raise httpx.HTTPStatusError(
+                    f"RAG {resp.status_code}: {resp.text[:300]}",
+                    request=resp.request, response=resp)
+            data = resp.json()
+            return data["answer"], data.get("context", "")
+
+    # --- async ---
+    async def async_chat(self, client: httpx.AsyncClient, prompt_messages: List[List[str]],
+                         inputs: Dict[str, Any], timeout: int = REQUEST_TIMEOUT_SECONDS) -> str:
+        payload = self._chat_payload(prompt_messages, inputs)
+        resp = await client.post(self.chat_url, json=payload, timeout=timeout)
+        if not resp.is_success:
+            raise httpx.HTTPStatusError(
+                f"Chat {resp.status_code}: {resp.text[:300]}",
+                request=resp.request, response=resp)
+        return resp.json()["answer"]
+
+
+# ===========================================================================
+# SpeakerChunker
+# ===========================================================================
 
 class SpeakerChunker(Logger):
-    """High-performance speaker attribution using async I/O and heuristics."""
 
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        model: str = DEFAULT_MODEL,
-        base_url: Optional[str] = None
-    ):
-        self.base_url = base_url or settings.HF_ENDPOINT_URL
-        self.api_key = api_key or settings.HF_TOKEN
-        self.model = model
-        # Sync client for warmup/primer (called once)
-        self.sync_client = OpenAI(base_url=self.base_url, api_key=self.api_key)
-        self.logger.info(f"SpeakerChunker v2 initialized (Async Mode) - Model: {model}")
+    def __init__(self, model: str = DEFAULT_MODEL, provider: str = DEFAULT_PROVIDER):
+        self.model              = model
+        self.provider           = provider
+        self._uid_to_idx:       Dict[int, int] = {}   # populated in _smart_split
+        self._alias_to_canonical: Dict[str, str] = {} # populated in _discover_characters
+        self.api                = _InternalAPI(
+            base_url = settings.INTERNAL_LLM_BASE_URL,
+            model    = model,
+            provider = provider,
+        )
+        self.logger.info(f"SpeakerChunker initialised — model: {model}  provider: {provider}")
 
     # ====================================================================
-    # Warmup (sync — only called once at startup)
+    # Warmup
     # ====================================================================
 
-    def warmup_endpoint(self, max_attempts: int = 3, delay_seconds: int = 10) -> None:
-        """Pings the serverless endpoint to ensure it's hot."""
-        self.logger.info(f"Warming up serverless endpoint ({max_attempts} pings, {delay_seconds}s apart)...")
+    def warmup_endpoint(self, max_attempts: int = 20, delay_seconds: int = 10) -> bool:
+        self.logger.info(f"Warming up RAG endpoint (max_attempts={max_attempts}, delay={delay_seconds}s)")
+
+        # Keep this simple + deterministic
+        system_msg = "You are a helpful assistant."
+        user_msg   = "Give a short test response."
 
         for attempt in range(1, max_attempts + 1):
             try:
-                start = time.time()
-                self.sync_client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": "Ping"}],
-                    max_tokens=1
-                )
-                duration = time.time() - start
-                self.logger.info(f"Warmup ping {attempt}/{max_attempts} successful ({duration:.2f}s)")
-                if attempt < max_attempts:
-                    time.sleep(delay_seconds)
-            except Exception as e:
-                self.logger.warning(f"Warmup ping {attempt}/{max_attempts} failed: {e}")
-                if attempt < max_attempts:
-                    time.sleep(delay_seconds)
+                t0 = time.time()
 
-        self.logger.info("Serverless endpoint warmup complete")
+                ans = self.api.sync_chat(
+                    prompt_messages=[["user", "hi"]],
+                    inputs={},
+                    timeout=30,
+                )
+
+                answer, web_context = self.api.sync_rag_chat(
+                    prompt_messages=[
+                        ["system", system_msg],
+                        ["user", user_msg]
+                    ],
+                    inputs={},
+                    search_query_template="test query warmup"
+                )
+                
+
+                dur = time.time() - t0
+
+                # Validate BOTH answer + retrieval happened + ans
+                if answer and web_context is not None and ans:
+                    self.logger.info(
+                        f"RAG endpoint warm (attempt {attempt}, {dur:.2f}s, context_len={len(web_context)})"
+                    )
+                    return True
+
+            except Exception as e:
+                self.logger.warning(f"Warmup attempt {attempt} failed: {e}")
+
+            if attempt < max_attempts:
+                self.logger.info("RAG still cold — retrying...")
+                time.sleep(delay_seconds)
+
+        self.logger.error("RAG endpoint failed to warm after retries")
+        return False
 
     # ====================================================================
-    # STEP 1: Pre-processing — Smart Splitting (unchanged from v1)
+    # Title extraction
+    # ====================================================================
+
+    def _extract_book_title(self, chunks: List[Dict[str, Any]]) -> str:
+        self.logger.info("Extracting book title from opening pages...")
+        intro_text = " ".join(c["text"] for c in chunks[:5])[:3000]
+
+        # Escape { and } to avoid LangChain format errors
+        intro_text = intro_text.replace("{", "{{").replace("}", "}}")
+
+        try:
+            answer = self.api.sync_chat(
+                prompt_messages=[
+                    ["system", "You are a literary assistant. Given the opening pages of a book, return ONLY the book title as a plain string — no quotes, no explanation."],
+                    ["user",  f"Opening text:\n\n{intro_text}\n\nWhat is the title of this book?"],
+                ],
+                inputs={},
+            )
+
+            # Normalize in case it's a dict
+            if isinstance(answer, dict):
+                answer = (
+                    answer.get("title")
+                    or answer.get("text")
+                    or answer.get("answer")
+                    or str(answer)
+                )
+
+            title = str(answer).strip().strip('"').strip("'")
+            self.logger.info(f"Extracted book title: '{title}'")
+            return title or "Unknown Book"
+
+        except Exception as e:
+            self.logger.warning(f"Title extraction failed: {e} — using 'Unknown Book'")
+            return "Unknown Book"
+
+    @staticmethod
+    def _looks_like_job_id(title: str) -> bool:
+        """Returns True if the string looks like a job/file ID rather than a real book title."""
+        return bool(re.search(r'[0-9a-f]{8}-[0-9a-f]{4}|job_|_pdf_|uploads_', title, re.IGNORECASE))
+
+    # ====================================================================
+    # STEP 1 — stitch chunks
     # ====================================================================
 
     def _stitch_chunks(self, chunks: List[Dict[str, Any]]) -> Tuple[str, List[Optional[int]]]:
-        """Concatenate raw PDF chunks into a single string."""
-        parts: List[str] = []
+        SEPARATOR = "\n"
+        parts:    List[str]           = []
         char_map: List[Optional[int]] = []
+
         for ch in chunks:
             txt = ch.get("text", "")
             if not txt:
                 continue
             cid = ch.get("chunk_id")
+            if parts:
+                parts.append(SEPARATOR)
+                char_map.extend([None])
             parts.append(txt)
             char_map.extend([cid] * len(txt))
-        return "".join(parts), char_map
 
-    def _resolve_source_chunks(
-        self,
-        char_map: List[Optional[int]],
-        start: int,
-        length: int,
-    ) -> List[int]:
-        end = start + length - 1
-        s = min(start, len(char_map) - 1)
-        e = min(end, len(char_map) - 1)
-        ids = {char_map[i] for i in range(s, e + 1) if char_map[i] is not None}
-        return sorted(ids)
+        full_text = "".join(parts)
+        assert len(full_text) == len(char_map), \
+            f"char_map {len(char_map)} != full_text {len(full_text)}"
+        self.logger.info(f"Stitched {len(chunks)} chunks → {len(full_text)} chars")
+        return full_text, char_map
+
+    def _resolve_chunk_id(self, char_map: List[Optional[int]], start: int, length: int) -> Optional[int]:
+        if length <= 0:
+            return None
+        end = min(start + length, len(char_map))
+        s   = min(start, len(char_map) - 1)
+        coverage: Dict[int, int] = {}
+        for i in range(s, end):
+            cid = char_map[i]
+            if cid is not None:
+                coverage[cid] = coverage.get(cid, 0) + 1
+        return max(coverage, key=lambda k: coverage[k]) if coverage else None
+
+    # ====================================================================
+    # STEP 2 — smart split
+    # ====================================================================
+
+    def _split_long_narration(self, text: str, start_offset: int, char_map: List[Optional[int]],
+                               uid_counter: int, is_new_paragraph: bool,
+                               continuation_quote: bool) -> List[TextUnit]:
+        if len(text) <= MAX_UNIT_CHARS:
+            cid = self._resolve_chunk_id(char_map, start_offset, len(text))
+            return [TextUnit(uid=uid_counter, text=text, is_quote=False,
+                             new_paragraph=is_new_paragraph, continuation_quote=continuation_quote, chunk_id=cid)]
+
+        sentences      = re.compile(r'(?<=[.!?])\s+').split(text)
+        units:         List[TextUnit] = []
+        current        = ""
+        current_offset = start_offset
+        first          = True
+
+        for sentence in sentences:
+            if current and len(current) + len(sentence) + 1 > MAX_UNIT_CHARS:
+                cid = self._resolve_chunk_id(char_map, current_offset, len(current))
+                units.append(TextUnit(uid=uid_counter, text=current, is_quote=False,
+                                      new_paragraph=(is_new_paragraph if first else False),
+                                      continuation_quote=(continuation_quote if first else False), chunk_id=cid))
+                uid_counter    += 1
+                first           = False
+                current_offset += len(current)
+                current         = sentence
+            else:
+                current = (current + " " + sentence) if current else sentence
+
+        if current:
+            cid = self._resolve_chunk_id(char_map, current_offset, len(current))
+            units.append(TextUnit(uid=uid_counter, text=current, is_quote=False,
+                                  new_paragraph=(is_new_paragraph if not units else False),
+                                  continuation_quote=(continuation_quote if not units else False), chunk_id=cid))
+        return units
+
+    @staticmethod
+    def _collapse_newlines_in_quotes(text: str) -> str:
+        def _fix(m: re.Match) -> str:
+            return m.group(0).replace("\n", " ")
+        text = re.sub(r'"[^"]*?"',               _fix, text, flags=re.DOTALL)
+        text = re.sub(r'\u201c[^\u201d]*?\u201d', _fix, text, flags=re.DOTALL)
+        return text
 
     def _smart_split(self, full_text: str, char_map: List[Optional[int]]) -> List[TextUnit]:
-        """Paragraph-aware, multi-paragraph-quote-aware splitter."""
-        self.logger.info("Smart-splitting text into paragraph-aware atomic units...")
-
-        para_pattern = re.compile(r'(\n\s*\n|\n)')
-        raw_paras = para_pattern.split(full_text)
+        self.logger.info("Smart-splitting text...")
+        normalised = self._collapse_newlines_in_quotes(full_text)
+        para_re    = re.compile(r'(\n\n+|\n)')
+        fragments  = para_re.split(normalised)
 
         paragraphs: List[Tuple[str, int]] = []
         offset = 0
-        for fragment in raw_paras:
-            if not fragment:
-                continue
-            paragraphs.append((fragment, offset))
-            offset += len(fragment)
+        for frag in fragments:
+            if frag and not re.fullmatch(r'\s+', frag):
+                paragraphs.append((frag, offset))
+            offset += len(frag)
 
         quote_pattern = re.compile(
             r'('
-            r'\u201c[^\u201d]*\u201d'
-            r'|"[^"]*"'
-            r'|\u201c[^\u201d]*$'
-            r'|"[^"]*$'
+            r'\u201c[^\u201d]*?\u201d'
+            r'|"[^"]*?"'
+            r'|\u201c[^\u201d]*?$'
+            r'|"[^"]*?$'
             r')',
-            re.DOTALL,
+            re.DOTALL
         )
 
         units: List[TextUnit] = []
-        uid = 0
+        uid   = 0
         open_multi_para_quote = False
 
         for para_text, para_offset in paragraphs:
@@ -204,722 +390,1276 @@ class SpeakerChunker(Logger):
             if not stripped:
                 continue
 
-            is_para_break = re.fullmatch(r'\s+', para_text)
-            if is_para_break:
-                continue
-
             is_new_paragraph = True
-            is_continuation = open_multi_para_quote and stripped.startswith(('"', '\u201c'))
-
-            segments = quote_pattern.split(para_text)
-            seg_offset = para_offset
+            is_continuation  = open_multi_para_quote and stripped.startswith(('"', '\u201c'))
+            segments         = quote_pattern.split(para_text)
 
             unclosed_this_para = False
             for seg in segments:
-                if not seg:
-                    continue
-                seg_stripped = seg.strip()
-                if seg_stripped.startswith(('"', '\u201c')):
-                    if seg_stripped.startswith('\u201c') and not seg_stripped.endswith('\u201d'):
-                        unclosed_this_para = True
-                    elif seg_stripped.startswith('"') and not seg_stripped.endswith('"'):
-                        unclosed_this_para = True
+                ss = seg.strip() if seg else ""
+                if ss.startswith('\u201c') and not ss.endswith('\u201d'):
+                    unclosed_this_para = True
+                elif ss.startswith('"') and not ss.endswith('"'):
+                    unclosed_this_para = True
 
+            seg_offset = para_offset
             for seg in segments:
                 if not seg:
                     continue
+                ss = seg.strip()
+                if not ss:
+                    seg_offset += len(seg)
+                    continue
 
-                length = len(seg)
-                seg_stripped = seg.strip()
-                is_quote = bool(seg_stripped) and seg_stripped[0] in ('"', '\u201c')
+                is_quote = ss[0] in ('"', '\u201c')
 
-                source_ids = self._resolve_source_chunks(char_map, seg_offset, length)
+                if is_quote:
+                    cid = self._resolve_chunk_id(char_map, seg_offset, len(seg))
+                    units.append(TextUnit(uid=uid, text=seg, is_quote=True,
+                                        new_paragraph=is_new_paragraph,
+                                        continuation_quote=(is_continuation and is_new_paragraph),
+                                        chunk_id=cid))
+                    uid += 1
+                else:
+                    for nu in self._split_long_narration(
+                        text=seg, start_offset=seg_offset, char_map=char_map,
+                        uid_counter=uid, is_new_paragraph=is_new_paragraph,
+                        continuation_quote=(is_continuation and is_new_paragraph),
+                    ):
+                        nu.uid = uid
+                        units.append(nu)
+                        uid += 1
 
-                unit = TextUnit(
-                    uid=uid,
-                    text=seg,
-                    is_quote=is_quote,
-                    new_paragraph=is_new_paragraph,
-                    continuation_quote=(is_continuation and is_quote and is_new_paragraph),
-                    source_chunk_ids=source_ids,
-                )
-                units.append(unit)
-                uid += 1
                 is_new_paragraph = False
-                seg_offset += length
+                seg_offset += len(seg)
 
             open_multi_para_quote = unclosed_this_para
 
-        # Merge orphan punctuation
+        QUOTE_STRIP = " \t\n\r\u201c\u201d\u2018\u2019\"\'"
+        orphan_re   = re.compile(r'^[\s,.\-;:!?]+$')
         merged: List[TextUnit] = []
-        orphan_re = re.compile(r'^[\s,.\-;:!?]+$')
+
         for unit in units:
             if merged and orphan_re.match(unit.text.strip()):
                 merged[-1].text += unit.text
-                merged[-1].source_chunk_ids = sorted(
-                    set(merged[-1].source_chunk_ids + unit.source_chunk_ids)
-                )
+            elif unit.is_quote and len(unit.text.strip(QUOTE_STRIP)) < 2:
+                self.logger.debug(f"Dropping empty quote: {repr(unit.text)}")
             else:
                 merged.append(unit)
 
         for i, u in enumerate(merged):
             u.uid = i
 
+        self._uid_to_idx = {u.uid: i for i, u in enumerate(merged)}
+
         self.logger.info(
-            f"Smart-split produced {len(merged)} units "
+            f"Smart-split → {len(merged)} units "
             f"({sum(1 for u in merged if u.is_quote)} quotes, "
-            f"{sum(1 for u in merged if not u.is_quote)} narration, "
-            f"{sum(1 for u in merged if u.continuation_quote)} multi-para continuations)"
+            f"{sum(1 for u in merged if not u.is_quote)} narration)"
         )
         return merged
 
     # ====================================================================
-    # STEP 2: Heuristic Anchoring (NEW — pre-tags explicit attributions)
+    # STEP 3 — character discovery via web-RAG (nickname-aware)
     # ====================================================================
-
-    def _apply_attribution_heuristics(
-        self,
-        all_units: List[TextUnit],
-        known_char_names: Set[str],
-        narrator_name: str,
-    ) -> Tuple[Dict[int, str], List[TextUnit]]:
-        """
-        Pre-tag quotes with explicit attribution patterns.
-
-        Patterns detected:
-        1. Post-quote attribution: "Hello," said Rand. → tags preceding quote
-        2. Pre-quote attribution: Rand said, "Hello." → tags following quote
-
-        Returns:
-            heuristic_tags: Dict of {uid: speaker} for confidently tagged quotes
-            untagged_quotes: List of quote units needing LLM classification
-        """
-        self.logger.info("Applying heuristic attribution anchoring...")
-
-        heuristic_tags: Dict[int, str] = {}
-        untagged_quotes: List[TextUnit] = []
-
-        # Build case-insensitive name pattern
-        name_pattern_str = "|".join(re.escape(n) for n in known_char_names if n != "Narrator")
-        if not name_pattern_str:
-            # No known characters — skip heuristics
-            for u in all_units:
-                if u.is_quote:
-                    untagged_quotes.append(u)
-            self.logger.info("No known characters for heuristics — all quotes go to LLM")
-            return heuristic_tags, untagged_quotes
-
-        # Pattern 1: Post-quote attribution — narration after quote contains "[verb] Name" or "Name [verb]"
-        # Examples: said Rand, Egwene replied, Mat asked
-        post_attr_pattern = re.compile(
-            rf'\b({SPEECH_VERBS})\s+({name_pattern_str})\b'
-            rf'|\b({name_pattern_str})\s+({SPEECH_VERBS})\b',
-            re.IGNORECASE
-        )
-
-        # Build uid -> unit index map
-        uid_to_idx = {u.uid: i for i, u in enumerate(all_units)}
-
-        tagged_uids: Set[int] = set()
-
-        # Pass 1: Find narration units with speech verbs and names
-        for i, unit in enumerate(all_units):
-            if unit.is_quote:
-                continue  # Only examine narration
-
-            match = post_attr_pattern.search(unit.text)
-            if match:
-                # Extract the character name (group 2 or 3 depending on order)
-                speaker = match.group(2) or match.group(3)
-                if not speaker:
-                    continue
-
-                # Normalize to title case
-                speaker = speaker.strip().title()
-
-                # Look backward for the most recent untagged quote
-                for j in range(i - 1, -1, -1):
-                    prev_unit = all_units[j]
-                    if prev_unit.is_quote and prev_unit.uid not in tagged_uids:
-                        heuristic_tags[prev_unit.uid] = speaker
-                        tagged_uids.add(prev_unit.uid)
-                        prev_unit.heuristic_confidence = 1.0
-                        break
-                    elif prev_unit.is_quote:
-                        break  # Already tagged quote — stop
-
-        # Also handle continuation quotes — inherit from previous quote
-        for i, unit in enumerate(all_units):
-            if unit.continuation_quote and unit.uid not in tagged_uids:
-                # Look backward for the most recent tagged quote
-                for j in range(i - 1, -1, -1):
-                    prev_unit = all_units[j]
-                    if prev_unit.is_quote and prev_unit.uid in tagged_uids:
-                        heuristic_tags[unit.uid] = heuristic_tags[prev_unit.uid]
-                        tagged_uids.add(unit.uid)
-                        unit.heuristic_confidence = 0.95
-                        break
-
-        # Collect untagged quotes
-        for u in all_units:
-            if u.is_quote and u.uid not in tagged_uids:
-                untagged_quotes.append(u)
-
-        heuristic_count = len(tagged_uids)
-        total_quotes = sum(1 for u in all_units if u.is_quote)
-        heuristic_pct = round(heuristic_count / max(total_quotes, 1) * 100, 1)
-
-        self.logger.info(
-            f"Heuristic anchoring: tagged {heuristic_count}/{total_quotes} quotes "
-            f"({heuristic_pct}%) — {len(untagged_quotes)} quotes need LLM"
-        )
-
-        return heuristic_tags, untagged_quotes
-
-    # ====================================================================
-    # STEP 3: Adaptive Token-Based Batching
-    # ====================================================================
-
-    def _build_adaptive_batches(self, units: List[TextUnit]) -> List[List[TextUnit]]:
-        """Pack units into batches that fit within BATCH_TOKEN_BUDGET."""
-        batches: List[List[TextUnit]] = []
-        current_batch: List[TextUnit] = []
-        current_tokens = 0
-
-        for unit in units:
-            unit_tokens = _estimate_unit_prompt_tokens(unit)
-            if current_batch and (current_tokens + unit_tokens) > BATCH_TOKEN_BUDGET:
-                batches.append(current_batch)
-                current_batch = [unit]
-                current_tokens = unit_tokens
-            else:
-                current_batch.append(unit)
-                current_tokens += unit_tokens
-
-        if current_batch:
-            batches.append(current_batch)
-
-        sizes = [len(b) for b in batches]
-        if sizes:
-            self.logger.info(
-                f"Adaptive batching: {len(batches)} batches | "
-                f"units/batch min={min(sizes)} avg={sum(sizes)//len(sizes)} max={max(sizes)}"
-            )
-        return batches
-
-    # ====================================================================
-    # STEP 4: LLM Classification (Async + Pipe Format)
-    # ====================================================================
-
-    def _build_system_prompt(self, primer: Dict[str, str]) -> str:
-        """Compact system prompt requesting pipe-delimited output."""
-        pov = primer.get('pov', 'Third Person')
-        narrator_name = primer.get('narrator_name', 'Narrator')
-        tense = primer.get('tense', 'Past')
-
-        return (
-            "You are a dialogue tagger. Tag each segment's speaker.\n\n"
-            f"BOOK: {pov} POV, narrator='{narrator_name}', tense={tense}.\n\n"
-            "RULES:\n"
-            "• [QUOTE] → identify the speaking character\n"
-            "• [CONT-QUOTE] → same speaker as preceding quote\n"
-            "• Turn-taking: dialogue often alternates A→B→A→B\n"
-            "• Vocative: name at quote START = LISTENER not speaker\n"
-            "• Context: character acting before quote is likely speaker\n\n"
-            "OUTPUT FORMAT: One line per segment, pipe-delimited:\n"
-            "ID|Speaker\n\n"
-            "Example:\n"
-            "42|Rand\n"
-            "43|Egwene\n"
-            "44|Mat\n\n"
-            "ONLY output tags. NO explanations, NO JSON, NO extra text."
-        )
-
-    def _format_batch_lines(self, units: List[TextUnit]) -> str:
-        """Compact format for LLM input."""
-        lines = []
-        for u in units:
-            if u.continuation_quote:
-                label = "[CONT]"
-            else:
-                label = "[Q]"
-
-            # Compact: just ID, label, and truncated text
-            sanitized = u.text.replace("\n", " ").strip()
-            if len(sanitized) > 300:
-                sanitized = sanitized[:300] + "..."
-
-            lines.append(f"{u.uid} {label}: {sanitized}")
-        return "\n".join(lines)
-
-    def _format_resolved_context(self, resolved_units: List[Tuple[TextUnit, str]]) -> str:
-        """Format resolved context for next batch."""
-        if not resolved_units:
-            return ""
-        lines = []
-        for unit, speaker in resolved_units[-CONTEXT_OVERLAP_UNITS:]:
-            short = unit.text.replace("\n", " ").strip()[:80]
-            lines.append(f"[{speaker}]: {short}")
-        return "\n".join(lines)
 
     @staticmethod
-    def _parse_pipe_response(content: str, valid_uids: Set[int]) -> Dict[int, str]:
-        """Parse pipe-delimited response: ID|Speaker"""
-        result: Dict[int, str] = {}
+    def _parse_character_json(raw: str) -> List[Dict]:
+        clean = re.sub(r"```(?:json)?|```", "", raw).strip()
+        try:
+            parsed = json.loads(clean)
+            if isinstance(parsed, list):
+                return parsed
+            return parsed.get("characters", [])
+        except json.JSONDecodeError:
+            recovered = []
+            for m in re.finditer(r'\{[^{}]*"name"[^{}]*\}', clean, re.DOTALL):
+                try:
+                    obj = json.loads(m.group(0))
+                    if obj.get("name"):
+                        recovered.append(obj)
+                except json.JSONDecodeError:
+                    continue
+            return recovered
 
-        # Match lines like "42|Rand" or "42 | Rand" or even "42: Rand" as fallback
-        pipe_pattern = re.compile(r'^(\d+)\s*[|:]\s*(.+?)\s*$', re.MULTILINE)
 
-        for match in pipe_pattern.finditer(content):
+    def _extract_characters_from_text(self, full_text: str) -> List[Dict]:
+        self.logger.info("Falling back to text-based character extraction...")
+        
+        # Use more slices across the full book
+        text_len = len(full_text)
+        samples = [
+            full_text[:8000],
+            full_text[text_len//5 : text_len//5 + 6000],
+            full_text[text_len//3 : text_len//3 + 6000],
+            full_text[text_len//2 : text_len//2 + 6000],
+            full_text[2*text_len//3 : 2*text_len//3 + 6000],
+        ]
+        
+        all_chars = []
+        
+        for i, sample in enumerate(samples):
             try:
-                uid = int(match.group(1))
-                speaker = match.group(2).strip()
-                # Only accept UIDs from this batch to prevent hallucination contamination
-                if uid in valid_uids and speaker:
-                    result[uid] = speaker
-            except ValueError:
+                answer = self.api.sync_chat(
+                    prompt_messages=[
+                        ["system", (
+                            "You are a literary analysis assistant. "
+                            "Extract every named character who speaks or acts in this text.\n\n"
+                            "STRICT RULES:\n"
+                            "1. Canonical name must be the character's REAL full name.\n"
+                            "2. aliases MUST include the most common short name used in dialogue.\n"
+                            "3. NEVER use non-English characters in names or aliases.\n"
+                            "4. If unsure about an alias, OMIT it.\n\n"
+                            "Return ONLY valid JSON — no markdown, no preamble.\n\n"
+                            '{{"characters": [{{"name": "string", "aliases": ["string"], "gender": "male|female|unknown", "description": "1 sentence"}}]}}'
+                        )],
+                        ["user", f"Text sample {i+1}:\n\n{sample}\n\nReturn ONLY the JSON."],
+                    ],
+                    inputs={},
+                )
+                chars = self._parse_character_json(answer)
+                self.logger.info(f"Text sample {i+1}: found {len(chars)} characters")
+                all_chars.extend(chars)
+            except Exception as e:
+                self.logger.warning(f"Text sample {i+1} extraction failed: {e}")
                 continue
+        
+        # Deduplicate by name
+        seen = {}
+        deduped = []
+        for c in all_chars:
+            name = c.get("name", "").strip().lower()
+            if name and name not in seen:
+                seen[name] = True
+                deduped.append(c)
+        
+        self.logger.info(f"Text fallback total: {len(deduped)} unique characters found")
+        return deduped
 
-        return result
 
-    async def _classify_batch_async(
-        self,
-        client: httpx.AsyncClient,
-        units: List[TextUnit],
-        known_chars: str,
-        system_prompt: str,
-        resolved_context: str = "",
-    ) -> Dict[int, str]:
-        """Async batch classification with pipe-delimited format."""
-        batch_text = self._format_batch_lines(units)
-        valid_uids = {u.uid for u in units}
+    def _discover_characters(self, book_title: str, full_text: str) -> List[Character]:
+        self.logger.info(f"Discovering characters: '{book_title}'")
 
-        context_block = ""
-        if resolved_context:
-            context_block = f"CONTEXT:\n{resolved_context}\n---\n"
-
-        user_prompt = (
-            f"Characters: {known_chars}\n\n"
-            f"{context_block}"
-            f"Tag these segments:\n{batch_text}\n\n"
-            "Output ONLY pipe-delimited tags (ID|Speaker), one per line."
+        system_msg = (
+            f"You are a literary analysis assistant. "
+            f"Using what you know about the '{book_title}' book, list every named character from it'.\n\n"
+            "STRICT RULES:\n"
+            "1. Canonical name must be the character's REAL full name — no nicknames embedded in it.\n"
+            "   CORRECT: 'Dallas Winston'   WRONG: 'Dally Winston' or \"Dallas 'Dally' Winston\"\n"
+            "2. aliases MUST include the most common short name used in dialogue — required, not optional.\n"
+            "   e.g. 'Ponyboy Curtis' → aliases must include 'Ponyboy'\n"
+            "   e.g. 'Dallas Winston' → aliases must include 'Dally'\n"
+            "   e.g. 'Sodapop Curtis' → aliases must include 'Soda'\n"
+            "3. aliases must ONLY be real nicknames or shortened names — never another character's name.\n"
+            "4. NEVER truncate names (e.g. 'Ponyc' is NOT valid).\n"
+            "5. NEVER use non-English characters in names or aliases.\n"
+            "6. NEVER include a name as an alias if it belongs to a different character.\n"
+            "7. If unsure about an alias, OMIT it.\n\n"
+            "Return ONLY valid JSON — no markdown, no preamble.\n\n"
+            '{{"characters": [{{'
+            '"name": "clean full real name — no embedded nicknames", '
+            '"aliases": ["most common short name", "other nickname"], '
+            '"gender": "male|female|unknown", '
+            '"description": "One sentence with the age group, physical and mental character traits in universal terms (focus), and relevance to and role in the story"'
+            '}}]}}'
         )
 
-        # Dynamic max_tokens: ~10 tokens per unit (ID|Speaker\n ≈ 5-8 tokens)
-        max_output_tokens = max(128, len(units) * 12)
+        # system_msg = (
+        #     f"You are a literary analysis assistant. "
+        #     f"List every named character from '{book_title}'.\n\n"
+        #     "STRICT RULES:\n"
+        #     "1. Canonical name must be the character's REAL full name — no nicknames embedded in it.\n"
+        #     "   CORRECT: 'Dallas Winston'   WRONG: 'Dally Winston' or \"Dallas 'Dally' Winston\"\n"
+        #     "2. aliases MUST include the most common short name used in dialogue — required, not optional.\n"
+        #     "   e.g. 'Ponyboy Curtis' → aliases must include 'Ponyboy'\n"
+        #     "   e.g. 'Dallas Winston' → aliases must include 'Dally'\n"
+        #     "   e.g. 'Sodapop Curtis' → aliases must include 'Soda'\n"
+        #     "3. aliases must ONLY be real nicknames or shortened names — never another character's name.\n"
+        #     "4. NEVER truncate names (e.g. 'Ponyc' is NOT valid).\n"
+        #     "5. NEVER use non-English characters in names or aliases.\n"
+        #     "6. NEVER include a name as an alias if it belongs to a different character.\n"
+        #     "7. If unsure about an alias, OMIT it.\n\n"
+        #     "Return ONLY valid JSON — no markdown, no preamble.\n\n"
+        #     '{{"characters": [{{'
+        #     '"name": "clean full real name — no embedded nicknames", '
+        #     '"aliases": ["most common short name", "other nickname"], '
+        #     '"gender": "male|female|unknown", '
+        #     '"description": "1 sentence"'
+        #     '}}]}}'
+        # )
+        user_msg = (
+            f"List every named character from '{book_title}' including nicknames and aliases. "
+            "Return ONLY the JSON."
+        )
 
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.1,
-            "max_tokens": max_output_tokens,
+        raw_chars: List[Dict] = []
+        try:
+            data, _ = self.api.sync_rag_chat(
+                prompt_messages=[["system", system_msg], ["user", user_msg]],
+                inputs={},
+                search_query_template=None,
+                # deployment_name="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+                timeout=120,
+            )
+            breakpoint()
+            raw_chars = data.get("characters", [])
+            self.logger.info(f"Cloudflare structured returned {len(raw_chars)} raw candidates")
+        except Exception as e:
+            self.logger.warning(f"Cloudflare character discovery failed: {e}")
+
+        if not raw_chars:
+            self.logger.warning("Cloudflare returned 0 characters — using text fallback")
+            raw_chars = self._extract_characters_from_text(full_text)
+
+        false_positive_re = [
+            r'^(chapter|prologue|epilogue|book|part)(\s+\d+)?$',
+            r'^(the\s+)?pattern$',
+            r'^(the\s+)?wheel(\s+of\s+time)?$',
+            r'^(the\s+)?one\s+power$',
+        ]
+
+        validated: List[Character] = []
+        seen:      Set[str]        = set()
+        alias_to_canonical: Dict[str, str] = {}
+
+        for c in raw_chars:
+            name = c.get("name", "").strip()
+            if not name or len(name) < 2:
+                continue
+            if any(re.match(p, name, re.IGNORECASE) for p in false_positive_re):
+                continue
+
+            if not re.match(r'^[A-Za-z\s\-\.\'\,]+$', name):
+                self.logger.debug(f"Filtered non-ASCII name: {name}")
+                continue
+
+            name = re.sub(r"\s*['\"].*?['\"]\s*", " ", name).strip()
+            name = re.sub(r"\s+", " ", name)
+
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            raw_aliases = c.get("aliases", [])
+            clean_aliases = [
+                a.strip() for a in raw_aliases
+                if isinstance(a, str)
+                and len(a.strip()) >= 2
+                and not re.search(r'\d', a)
+                and re.match(r'^[A-Za-z\s\-\.\']+$', a.strip())
+                and a.strip().lower() != name.lower()
+            ]
+
+            first_name = name.split()[0]
+            if (first_name.lower() != name.lower()
+                    and len(first_name) >= 3
+                    and first_name not in clean_aliases
+                    and first_name.lower() not in alias_to_canonical):
+                clean_aliases.append(first_name)
+
+            name_mentions  = full_text.lower().count(name.lower().split()[0])
+            alias_mentions = sum(full_text.lower().count(a.lower()) for a in clean_aliases)
+            if name_mentions == 0 and alias_mentions == 0:
+                self.logger.debug(f"Filtered zero-mention character: {name}")
+                continue
+
+            validated.append(Character(
+                name=name,
+                gender=c.get("gender", "unknown"),
+                description=c.get("description", ""),
+                mentioned_count=full_text.lower().count(name.lower()),
+                aliases=clean_aliases,
+            ))
+
+            alias_to_canonical[name.lower()] = name
+            for alias in clean_aliases:
+                alias_to_canonical[alias.lower()] = name
+
+        alias_counts: Dict[str, List[str]] = {}
+        for alias, canonical in alias_to_canonical.items():
+            alias_counts.setdefault(alias, []).append(canonical)
+        alias_to_canonical = {
+            alias: canonicals[0]
+            for alias, canonicals in alias_counts.items()
+            if len(canonicals) == 1
         }
+
+        alias_to_chars: Dict[str, List[Character]] = {}
+        for char in validated:
+            for alias in char.aliases:
+                alias_to_chars.setdefault(alias.lower(), []).append(char)
+
+        chars_to_remove: Set[str] = set()
+        for alias, chars in alias_to_chars.items():
+            if len(chars) > 1:
+                chars.sort(key=lambda c: c.mentioned_count, reverse=True)
+                for loser in chars[1:]:
+                    chars_to_remove.add(loser.name.lower())
+                    for a in loser.aliases:
+                        if a not in chars[0].aliases:
+                            chars[0].aliases.append(a)
+                        alias_to_canonical[a.lower()] = chars[0].name
+
+        validated = [c for c in validated if c.name.lower() not in chars_to_remove]
+
+        by_length = sorted(validated, key=lambda c: len(c.name), reverse=True)
+        absorbed:  Set[str]        = set()
+        deduped:   List[Character] = []
+
+        for char in by_length:
+            if char.name.lower() in absorbed:
+                continue
+            deduped.append(char)
+            for other in by_length:
+                if other.name != char.name and re.match(
+                    r'(?i)^' + re.escape(other.name) + r'\b', char.name
+                ):
+                    absorbed.add(other.name.lower())
+
+        if not any(c.name == "Narrator" for c in deduped):
+            deduped.insert(0, Character("Narrator", "neutral", "The narrative voice of the story", 0))
+
+        deduped.sort(key=lambda c: c.mentioned_count, reverse=True)
+        self._alias_to_canonical = alias_to_canonical
+
+        self.logger.info(
+            f"Character discovery complete — {len(deduped)} characters, "
+            f"{len(alias_to_canonical)} name/alias entries"
+        )
+        for c in deduped[:15]:
+            alias_str = f" aliases: {c.aliases}" if c.aliases else ""
+            self.logger.info(f"  → {c.name} ({c.gender}, {c.mentioned_count}x){alias_str}")
+
+        sample = {k: v for k, v in list(alias_to_canonical.items())[:30]}
+        self.logger.info(f"Alias map sample (first 30): {sample}")
+
+        return deduped
+
+    # ====================================================================
+    # STEP 4 — book primer
+    # ====================================================================
+
+    def _generate_book_primer(self, intro_text: str) -> Dict[str, str]:
+        self.logger.info("Generating book primer...")
+        try:
+            answer = self.api.sync_chat(
+                prompt_messages=[
+                    ["system", (
+                        "You are a literary analysis assistant. "
+                        "Analyze the opening text and return ONLY valid JSON — no markdown, no preamble.\n\n"
+                        "CRITICAL RULES:\n"
+                        "- If the text uses 'he', 'she', or character names to describe actions, "
+                        "it is THIRD PERSON and narrator_name MUST be 'Narrator'.\n"
+                        "- If the narrator uses 'I' or 'me' to describe their own actions, "
+                        "it is FIRST PERSON. In that case narrator_name MUST be the actual "
+                        "character name of the 'I' narrator — NEVER 'Narrator'.\n"
+                        "- To find the First Person narrator's name: look for dialogue tags, "
+                        "other characters addressing the narrator by name, or self-identification.\n"
+                        "- When in doubt about POV, default to Third Person with narrator_name 'Narrator'.\n\n"
+                        '{{"pov": "First Person|Third Person", "narrator_name": "string", "tense": "Past|Present"}}'
+                    )],
+                    ["user", (
+                        f"Opening text:\n\n{intro_text[:6000]}\n\n"
+                        "What is the POV? If First Person, what is the narrator's actual name "
+                        "(look for other characters calling them by name)? "
+                        "Return ONLY the JSON."
+                    )],
+                ],
+                inputs={},
+                timeout=120,
+            )
+            clean = re.sub(r"```(?:json)?|```", "", answer).strip()
+            data  = json.loads(clean)
+
+            pov           = data.get("pov", "Third Person")
+            narrator_name = data.get("narrator_name", "Narrator")
+
+            if pov == "Third Person":
+                narrator_name = "Narrator"
+
+            result = {
+                "pov":           pov,
+                "narrator_name": narrator_name,
+                "tense":         data.get("tense", "Past"),
+            }
+        except Exception as e:
+            self.logger.warning(f"Primer failed: {e} — using defaults")
+            result = {"pov": "Third Person", "narrator_name": "Narrator", "tense": "Past"}
+
+        self.logger.info(f"Primer → {result['pov']} | {result['narrator_name']} | {result['tense']}")
+        return result
+
+    # ====================================================================
+    # STEP 5 — heuristic anchoring (alias-aware)
+    # ====================================================================
+
+    def _build_scene_windows(
+        self,
+        full_text: str,
+        all_units: List[TextUnit],
+    ) -> List[Dict[str, Any]]:
+        text_len = len(full_text)
+        step     = SCENE_WINDOW_CHARS - SCENE_OVERLAP_CHARS
+
+        unit_char_offsets: Dict[int, int] = {}
+        search_from = 0
+        for u in all_units:
+            target = u.text[:60]
+            pos    = full_text.find(target, search_from)
+            if pos == -1:
+                pos = full_text.find(target)
+            if pos != -1:
+                unit_char_offsets[u.uid] = pos
+                search_from = pos
+
+        scenes: List[Dict[str, Any]] = []
+        start = 0
+        while start < text_len:
+            end        = min(start + SCENE_WINDOW_CHARS, text_len)
+            window_quotes = [
+                u for u in all_units
+                if u.is_quote
+                and u.uid in unit_char_offsets
+                and start <= unit_char_offsets[u.uid] < end
+            ]
+
+            if window_quotes:
+                if len(window_quotes) > MAX_QUOTES_PER_SCENE:
+                    mid      = len(window_quotes) // 2
+                    mid_off  = unit_char_offsets.get(window_quotes[mid].uid, (start + end) // 2)
+                    scenes.append({
+                        "text":   full_text[max(0, start - 300):min(text_len, mid_off + 300)],
+                        "start":  start,
+                        "end":    mid_off,
+                        "quotes": window_quotes[:mid],
+                    })
+                    scenes.append({
+                        "text":   full_text[max(0, mid_off - 300):min(text_len, end + 300)],
+                        "start":  mid_off,
+                        "end":    end,
+                        "quotes": window_quotes[mid:],
+                    })
+                else:
+                    scenes.append({
+                        "text":   full_text[max(0, start - 300):min(text_len, end + 300)],
+                        "start":  start,
+                        "end":    end,
+                        "quotes": window_quotes,
+                    })
+
+            start += step
+
+        seen_uids: Set[int]             = set()
+        deduped:   List[Dict[str, Any]] = []
+        for scene in scenes:
+            unique = [q for q in scene["quotes"] if q.uid not in seen_uids]
+            if unique:
+                seen_uids.update(q.uid for q in unique)
+                scene["quotes"] = unique
+                deduped.append(scene)
+
+        missed_uids = {
+            u.uid for u in all_units
+            if u.is_quote and u.uid not in seen_uids
+        }
+        if missed_uids:
+            self.logger.warning(f"{len(missed_uids)} quotes had no offset match — adding as micro-scenes")
+            for u in all_units:
+                if u.uid in missed_uids:
+                    pos = full_text.find(u.text[:40])
+                    if pos == -1:
+                        pos = 0
+                    w_start = max(0, pos - 400)
+                    w_end   = min(text_len, pos + 600)
+                    deduped.append({
+                        "text":   full_text[w_start:w_end],
+                        "start":  w_start,
+                        "end":    w_end,
+                        "quotes": [u],
+                    })
+                    seen_uids.add(u.uid)
+
+        total_covered = sum(len(s["quotes"]) for s in deduped)
+        self.logger.info(
+            f"Scene windowing: {len(deduped)} scenes | "
+            f"{total_covered} quotes covered"
+        )
+        return deduped
+
+    # ====================================================================
+    # STEP 6 — adaptive batching
+    # ====================================================================
+
+    def _build_scene_system_prompt(self, primer: Dict[str, str], known_chars_str: str) -> str:
+        narrator = primer.get('narrator_name', 'Narrator')
+        pov      = primer.get('pov', 'Third Person')
+        tense    = primer.get('tense', 'Past')
+        return (
+            f"You are an expert dialogue attribution system for literary fiction.\n\n"
+            f"BOOK CONTEXT:\n"
+            f"- POV: {pov}\n"
+            f"- Narrator: {narrator}\n"
+            f"- Tense: {tense}\n"
+            f"- Known characters: {known_chars_str}\n\n"
+            "You will receive a passage of text with [Q:N] or [CONT:N] tags marking quoted dialogue. "
+            "Read the ENTIRE passage including all narration before attributing any quote.\n\n"
+            "HOW TO IDENTIFY THE SPEAKER:\n"
+            "- Look at the narration IMMEDIATELY before and after each tagged quote.\n"
+            "- The speaker is the character described as acting, speaking, or moving in that narration.\n"
+            "- A name at the START of a quote followed by a comma is being ADDRESSED, not speaking.\n"
+            "  e.g. 'Ponyboy, come here!' → someone else speaks TO Ponyboy.\n"
+            "- A character who reacts, stares, or looks AFTER a quote is the LISTENER — find the speaker BEFORE the quote.\n"
+            "  e.g. 'Get out.' Darry stared at him. → Darry is the LISTENER. Speaker is whoever acted before the quote.\n"
+            "  e.g. 'Get out.' Soda nodded. → Soda is the SPEAKER (physical action = speaker).\n"
+            "- [CONT] always has the SAME speaker as the quote immediately before it.\n"
+            "- ONLY use characters who are actually present in THIS passage. Ignore characters from earlier scenes.\n\n"
+            "SPECIAL CASES:\n"
+            f"- A word or term being defined in narration (not spoken aloud) → {narrator}.\n"
+            "- Anonymous voice with no named actor → Unknown.\n"
+            "- Truly ambiguous after reading full context → Unknown.\n"
+            "- NEVER output pronouns. Always resolve he/she/they to the character's name.\n\n"
+            "EXAMPLES (study these carefully before attributing):\n\n"
+            "Passage: Soda threw his arm over my shoulder. [Q:0] \"Don't sweat it, Pony.\"\n"
+            "0|Sodapop Curtis\n\n"
+            "Passage: [Q:0] \"Ponyboy,\" Darry said sharply, [Q:1] \"get inside now.\"\n"
+            "0|Darry\n"
+            "1|Darry\n\n"
+            "Passage: Dally lit a cigarette and walked off. Later, lying in bed, Soda mumbled [Q:0] \"I'm gonna marry Sandy someday.\"\n"
+            "0|Sodapop Curtis\n\n"
+            "Passage: [Q:0] \"Johnny, I ain't mad at you.\" He pushed his white-blond hair back. [Q:1] \"I just don't want you getting hurt.\"\n"
+            "0|Dallas Winston\n"
+            "1|Dallas Winston\n\n"
+            "Passage: Johnny gulped but said [Q:0] \"You heard me. Leave her alone.\" Dallas scowled.\n"
+            "0|Johnny Cade\n\n"
+            "Passage: [Q:0] \"Need a haircut, greaser?\" I remembered that voice from earlier that night.\n"
+            f"0|Unknown\n\n"
+            "---\n\n"
+            "OUTPUT FORMAT — one pipe-delimited line per tagged quote, nothing else:\n"
+            "0|Speaker Name\n"
+            "1|Speaker Name\n\n"
+            "OUTPUT ONLY PIPE-DELIMITED LINES. No explanation. No reasoning. No JSON."
+        )
+
+    # ====================================================================
+    # STEP 7 — attribution system prompt
+    # ====================================================================
+
+    def _build_attribution_system_prompt(self, primer: Dict[str, str]) -> str:
+        return (
+            f"You are an expert dialogue attribution system.\n\n"
+            f"BOOK CONTEXT:\n"
+            f"- POV: {primer.get('pov', 'Third Person')}\n"
+            f"- Narrator: {primer.get('narrator_name', 'Narrator')}\n"
+            f"- Tense: {primer.get('tense', 'Past')}\n\n"
+            "TASK: For each [Q] or [CONT] segment, identify the speaker.\n\n"
+            "RULES:\n"
+            "1. 'Hello,' said John → John. Mary replied, 'Yes.' → Mary.\n"
+            "2. Names at START of quote = person ADDRESSED not speaker. 'John, come here!' → someone else speaks.\n"
+            "3. [CONT] = ALWAYS same speaker as the immediately preceding quote.\n"
+            "4. NEVER output he/she/they — resolve to actual character name from context.\n"
+            "5. Truly ambiguous → Unknown\n\n"
+            "OUTPUT: one pipe-delimited line per segment: ID|Speaker\n"
+            "Example:\n15|Rand\n16|Moiraine\n17|Moiraine\n\n"
+            "OUTPUT ONLY PIPE-DELIMITED TAGS. NO explanations. NO JSON."
+        )
+
+
+    def _validate_attribution(
+        self,
+        uid: int,
+        speaker: str,
+        all_units: List[TextUnit],
+        alias_map: Dict[str, str],
+    ) -> str:
+        if speaker in ("Unknown", "Narrator"):
+            return speaker
+
+        idx = self._uid_to_idx.get(uid)
+        if idx is None:
+            return speaker
+
+        window_narration = " ".join(
+            all_units[j].text
+            for j in range(max(0, idx - 4), min(len(all_units), idx + 5))
+            if not all_units[j].is_quote
+        )
+
+        if not window_narration.strip():
+            return speaker
+
+        # If "I said/asked/pleaded" etc. is in window — narrator speaking, trust LLM
+        first_person_speech_re = re.compile(
+            rf'\bI\s+({SPEECH_VERBS})\b', re.IGNORECASE
+        )
+        if first_person_speech_re.search(window_narration):
+            return speaker
+
+        canonical_lower  = speaker.lower()
+        speaker_surfaces = {speaker}
+        for alias, canon in alias_map.items():
+            if canon.lower() == canonical_lower:
+                speaker_surfaces.add(alias)
+        first = speaker.split()[0]
+        if len(first) >= 3:
+            speaker_surfaces.add(first)
+
+        name_pattern = "|".join(re.escape(s) for s in sorted(speaker_surfaces, key=len, reverse=True))
+
+        speech_re = re.compile(
+            rf'(?:'
+            rf'\b({name_pattern})\b.{{0,80}}\b({SPEECH_VERBS})\b'
+            rf'|'
+            rf'\b({SPEECH_VERBS})\b.{{0,80}}\b({name_pattern})\b'
+            rf')',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        if speech_re.search(window_narration):
+            return speaker
+
+        any_speech_re = re.compile(rf'\b({SPEECH_VERBS})\b', re.IGNORECASE)
+        if not any_speech_re.search(window_narration):
+            return speaker
+
+        return "Unknown"
+
+
+
+    async def _classify_scene_async(
+        self,
+        client:        httpx.AsyncClient,
+        scene:         Dict[str, Any],
+        system_prompt: str,
+        alias_map:     Dict[str, str],
+    ) -> Dict[int, str]:
+        quotes     = scene["quotes"]
+        raw_text   = scene["text"]
+
+        # Inject [Q:N] / [CONT:N] markers into the passage
+        marked_text   = raw_text
+        quote_index:  Dict[int, int] = {}
+        local_to_uid: Dict[int, int] = {}
+
+        for local_idx, q in enumerate(quotes):
+            quote_index[q.uid]       = local_idx
+            local_to_uid[local_idx]  = q.uid
+            label  = f"[CONT:{local_idx}]" if q.continuation_quote else f"[Q:{local_idx}]"
+            target = q.text.replace("\n", " ").strip()[:80]
+            pos    = marked_text.find(target)
+            if pos != -1:
+                marked_text = marked_text[:pos] + label + " " + marked_text[pos:]
+
+        valid_uids = {q.uid for q in quotes}
+
+        prompt_messages = [
+            ["system", system_prompt],
+            ["user", (
+                f'Passage:\n\n{marked_text}\n\n'
+                f'There are exactly {len(quotes)} tagged quotes in this passage.\n\n'
+                'BEFORE attributing, silently work through each quote in order:\n'
+                '1. Find the action beat or narration immediately BEFORE the quote — who is acting?\n'
+                '2. Find the action beat or speech verb immediately AFTER the quote — who is acting?\n'
+                '3. A name inside a quote is being ADDRESSED — it is NOT the speaker.\n'
+                '4. The speaker is whoever is described acting/speaking in the surrounding narration.\n\n'
+                f'Tagged quotes to attribute:\n'
+                + '\n'.join(f'{i}: {q.text.strip()[:80]}' for i, q in enumerate(quotes))
+                + '\n\nOutput ONLY pipe-delimited lines (N|Speaker), one per quote.'
+            )],
+        ]
+
+        def _resolve(raw_speaker: str) -> str:
+            """Resolve a raw speaker string to canonical name via alias map."""
+            # Fix concatenated names e.g. "JohnnyCade" → "Johnny Cade"
+            speaker = re.sub(r'([a-z])([A-Z])', r'\1 \2', raw_speaker).strip()
+
+            # Filter garbage — must have at least 2 chars and contain a letter
+            if len(speaker) < 2 or not re.search(r'[A-Za-z]', speaker):
+                return ""
+
+            # Filter non-ASCII garbage e.g. "警官"
+            if not re.match(r'^[A-Za-z\s\-\.\'\,]+$', speaker):
+                return ""
+
+            # Direct alias map lookup
+            canonical = alias_map.get(speaker.lower())
+            if canonical:
+                return canonical
+
+            # First-name fallback — "Ponyboy" → alias_map["ponyboy"]
+            first = speaker.split()[0].lower()
+            canonical = alias_map.get(first)
+            if canonical:
+                return canonical
+
+            # Last-name fallback — "Curtis" → find canonical with that last name
+            if len(speaker.split()) == 1:
+                for key, val in alias_map.items():
+                    if key.endswith(speaker.lower()):
+                        return val
+
+            return speaker  # return as-is if no match found
 
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                answer = await self.api.async_chat(
+                    client=client,
+                    prompt_messages=prompt_messages,
+                    inputs={},
                     timeout=REQUEST_TIMEOUT_SECONDS,
                 )
-                response.raise_for_status()
+                
+                result: Dict[int, str] = {}
+                for m in re.compile(r'^(\d+)\s*[|:]\s*(.+?)\s*$', re.MULTILINE).finditer(answer):
+                    try:
+                        local_idx = int(m.group(1))
+                        raw       = m.group(2).strip()
+                        uid       = local_to_uid.get(local_idx)
+                        if uid is None or uid not in valid_uids:
+                            continue
 
-                data = response.json()
-                content = data["choices"][0]["message"]["content"]
+                        if raw.lower() in ("unknown", "?", "unclear", "ambiguous"):
+                            result[uid] = "Unknown"
+                            continue
 
-                result = self._parse_pipe_response(content, valid_uids)
+                        resolved = _resolve(raw)
+                        if resolved:
+                            result[uid] = resolved
+
+                    except ValueError:
+                        continue
 
                 if result:
                     return result
-                else:
-                    # Fallback: try JSON parsing in case model ignored format
-                    try:
-                        json_data = json.loads(content)
-                        tags = json_data.get("tags", json_data)
-                        for k, v in tags.items():
-                            try:
-                                uid = int(k)
-                                if uid in valid_uids:
-                                    result[uid] = str(v) if not isinstance(v, dict) else v.get("speaker", "Narrator")
-                            except ValueError:
-                                continue
-                        if result:
-                            return result
-                    except json.JSONDecodeError:
-                        pass
 
-                    if attempt < max_retries - 1:
-                        self.logger.warning(f"Empty parse result, retrying (attempt {attempt + 1})")
-                        await asyncio.sleep(0.3)
-                    else:
-                        self.logger.warning(f"Batch parse failed — {len(units)} units untagged")
+                if attempt < max_retries - 1:
+                    self.logger.warning(f"Scene parse empty — retrying (attempt {attempt + 1})")
+                    await asyncio.sleep(0.5)
+                else:
+                    self.logger.warning(f"Scene attribution failed — {len(quotes)} quotes untagged")
 
             except httpx.HTTPStatusError as e:
+                self.logger.error(f"HTTP {e.response.status_code}: {e.response.text[:200]}")
                 if e.response.status_code == 503 and attempt < max_retries - 1:
-                    wait = 2 ** (attempt + 1)
-                    self.logger.warning(f"503 error, retrying in {wait}s")
-                    await asyncio.sleep(wait)
-                else:
-                    self.logger.error(f"HTTP error: {e}")
+                    await asyncio.sleep(2 ** (attempt + 1))
             except httpx.TimeoutException:
                 if attempt < max_retries - 1:
-                    self.logger.warning(f"Timeout, retrying (attempt {attempt + 1})")
+                    self.logger.warning(f"Scene timeout — retrying (attempt {attempt + 1})")
                 else:
-                    self.logger.error(f"Batch timed out after {REQUEST_TIMEOUT_SECONDS}s")
+                    self.logger.error(f"Scene timed out — skipping {len(quotes)} quotes")
+                    return {}
             except Exception as e:
-                self.logger.error(f"Unexpected error: {e}")
+                self.logger.error(f"Unexpected scene error: {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(0.5)
 
         return {}
 
     # ====================================================================
-    # STEP 5: Main Entry Point (Async Orchestration)
+    # STEP 8 — batch formatting  (FIX: O(1) context lookup via _uid_to_idx)
+    # ====================================================================
+
+    def _get_surrounding_context(self, unit: TextUnit, all_units: List[TextUnit],
+                                  window: int = 2) -> Tuple[str, str]:
+        # O(1) lookup instead of O(n) linear scan
+        idx = self._uid_to_idx.get(unit.uid)
+        if idx is None:
+            return "", ""
+        before = [all_units[i].text.strip().replace("\n", " ")[:120]
+                  for i in range(max(0, idx - window), idx) if not all_units[i].is_quote]
+        after  = [all_units[i].text.strip().replace("\n", " ")[:120]
+                  for i in range(idx + 1, min(len(all_units), idx + window + 1)) if not all_units[i].is_quote]
+        return " ".join(filter(None, before)), " ".join(filter(None, after))
+
+    def _format_batch_lines(self, units: List[TextUnit], all_units: List[TextUnit]) -> str:
+        lines = []
+        for u in units:
+            label      = "[CONT]" if u.continuation_quote else "[Q]"
+            quote_text = u.text.replace("\n", " ").strip()[:MAX_QUOTE_CHARS_IN_PROMPT]
+            before_ctx, after_ctx = self._get_surrounding_context(u, all_units)
+            before_ctx = before_ctx[:MAX_CONTEXT_CHARS_IN_PROMPT]
+            after_ctx  = after_ctx[:MAX_CONTEXT_CHARS_IN_PROMPT]
+            line = f"{u.uid} {label}: {quote_text}"
+            if before_ctx:
+                line = f"[Ctx: {before_ctx}] {line}"
+            if after_ctx:
+                line = f"{line} [After: {after_ctx}]"
+            lines.append(line)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _parse_pipe_response(content: str, valid_uids: Set[int]) -> Dict[int, str]:
+        result: Dict[int, str] = {}
+        for m in re.compile(r'^(\d+)\s*[|:]\s*(.+?)\s*$', re.MULTILINE).finditer(content):
+            try:
+                uid     = int(m.group(1))
+                speaker = m.group(2).strip()
+                if uid in valid_uids and speaker:
+                    result[uid] = speaker
+            except ValueError:
+                continue
+        return result
+
+    # ====================================================================
+    # STEP 9 — async batch classification
+    # ====================================================================
+
+    async def _classify_batch_async(self, client: httpx.AsyncClient, units: List[TextUnit],
+                                     all_units: List[TextUnit], known_chars: str,
+                                     system_prompt: str) -> Dict[int, str]:
+        batch_text = self._format_batch_lines(units, all_units)
+        valid_uids = {u.uid for u in units}
+
+        prompt_messages = [
+            ["system", system_prompt],
+            ["user", (
+                f"Characters in this book: {known_chars}\n\n"
+                f"Tag these dialogue segments:\n{batch_text}\n\n"
+                "Output ONLY pipe-delimited tags (ID|Speaker), one per line."
+            )],
+        ]
+
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                answer = await self.api.async_chat(
+                    client=client,
+                    prompt_messages=prompt_messages,
+                    inputs={},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+
+                result = self._parse_pipe_response(answer, valid_uids)
+                if result:
+                    return result
+
+                # fallback JSON parse
+                try:
+                    clean = re.sub(r"```(?:json)?|```", "", answer).strip()
+                    tags  = json.loads(clean).get("tags", {})
+                    for k, v in tags.items():
+                        uid = int(k)
+                        if uid in valid_uids:
+                            result[uid] = str(v) if not isinstance(v, dict) else v.get("speaker", "Narrator")
+                    if result:
+                        return result
+                except Exception:
+                    pass
+
+                if attempt < max_retries - 1:
+                    self.logger.warning(f"Empty parse — retrying (attempt {attempt + 1})")
+                    await asyncio.sleep(0.5)
+                else:
+                    self.logger.warning(f"Batch parse failed — {len(units)} units untagged")
+
+            except httpx.HTTPStatusError as e:
+                self.logger.error(f"HTTP {e.response.status_code}: {e.response.text[:200]}")
+                if e.response.status_code == 503 and attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** (attempt + 1))
+            except httpx.TimeoutException:
+                if attempt < max_retries - 1:
+                    self.logger.warning(f"Timeout — retrying (attempt {attempt + 1})")
+                else:
+                    self.logger.error(f"Batch timed out after {REQUEST_TIMEOUT_SECONDS}s")
+            except Exception as e:
+                self.logger.error(f"Unexpected batch error: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.5)
+
+        return {}
+
+    # ====================================================================
+    # STEP 10 — entry point
     # ====================================================================
 
     def chunk_by_speaker(
         self,
-        processed_data: Dict[str, Any],
-        concurrency: int = MAX_CONCURRENT_REQUESTS,
+        processed_data:    Dict[str, Any],
+        book_title:        str = "Unknown Book",
+        concurrency:       int = MAX_CONCURRENT_REQUESTS,
         progress_callback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
-        """Main entry point — wraps async implementation for sync callers."""
         return asyncio.run(
-            self._chunk_by_speaker_async(processed_data, concurrency, progress_callback)
+            self._chunk_by_speaker_async(processed_data, book_title, concurrency, progress_callback)
         )
 
-    async def _chunk_by_speaker_async(
-        self,
-        processed_data: Dict[str, Any],
-        concurrency: int = MAX_CONCURRENT_REQUESTS,
-        progress_callback: Optional[Callable] = None,
-    ) -> Dict[str, Any]:
-        """Async implementation of speaker chunking."""
+
+    async def _chunk_by_speaker_async(self, processed_data:Dict[str, Any], book_title:str = "Unknown Book", concurrency:int = MAX_CONCURRENT_REQUESTS,
+                                    progress_callback: Optional[Callable] = None,) -> Dict[str, Any]:
+
         start_time = time.time()
-        chunks = processed_data.get("chunks", [])
+        chunks     = processed_data.get("chunks", [])
 
-        # -- 1. Book Primer (sync — only once) -----------------------------
-        self.logger.info("Analyzing book context (POV, narrator, tense)...")
-        intro_text = " ".join([c["text"] for c in chunks[:5]])
-        primer = self._generate_book_primer(intro_text)
-        #breakpoint()
-        self.logger.info(
-            f"Book Primer: {primer.get('pov')} POV, "
-            f"Narrator: {primer.get('narrator_name')}, "
-            f"Tense: {primer.get('tense')}"
-        )
-
-        # -- 2. Character Discovery (sync — only once) ---------------------
-        self.logger.info("Discovering characters from intro text...")
-        characters = self._discover_characters(intro_text)
-        known_chars_str = ", ".join([c.name for c in characters])
-        known_char_names = {c.name for c in characters}
-        self.logger.info(f"Discovered {len(characters)} characters: {known_chars_str}")
-        breakpoint()
-        # -- 3. Smart Split ------------------------------------------------
+        # 1. Stitch + split
         full_text, char_map = self._stitch_chunks(chunks)
-        all_units = self._smart_split(full_text, char_map)
-        total_units = len(all_units)
-        total_quotes = sum(1 for u in all_units if u.is_quote)
-        self.logger.info(
-            f"Split into {total_units} text units "
-            f"({total_quotes} quotes, {total_units - total_quotes} narration)"
-        )
+        all_units           = self._smart_split(full_text, char_map)
+        
+        total_units         = len(all_units)
+        total_quotes        = sum(1 for u in all_units if u.is_quote)
+        self.logger.info(f"Split → {total_units} units ({total_quotes} quotes, {total_units - total_quotes} narration)")
 
-        # -- 4. Pre-tag narration locally ----------------------------------
+        # 2. Primer + title in parallel
+        intro_text = " ".join(c["text"] for c in chunks[:30])
+        need_title = not book_title or book_title == "Unknown Book" or self._looks_like_job_id(book_title)
+
+        if need_title:
+            self.logger.info("Running primer + title extraction in parallel...")
+            primer, book_title = await asyncio.gather(
+                asyncio.to_thread(self._generate_book_primer, intro_text),
+                asyncio.to_thread(self._extract_book_title, chunks),
+            )
+        else:
+            primer = await asyncio.to_thread(self._generate_book_primer, intro_text)
+        
+        # 3. Character discovery
+        characters      = self._discover_characters(book_title, full_text)
+        known_chars_str = ", ".join(c.name for c in characters if c.name != "Narrator")
+        known_char_names: Set[str] = {c.name for c in characters}
+        known_char_names |= set(self._alias_to_canonical.keys())
+        self.logger.info(f"Characters + aliases: {len(known_char_names)} total name entries")
+
+        # 4. Pre-tag narration
+        alias_map = dict(self._alias_to_canonical)
         narrator_name = primer.get("narrator_name", "Narrator")
+
+        # Correct First Person narrator if LLM defaulted to "Narrator"
+        if primer.get("pov") == "First Person" and narrator_name == "Narrator":
+            best_candidate = None
+            best_count     = 0
+            for char in characters:
+                if char.name == "Narrator":
+                    continue
+                first = char.name.split()[0].lower()
+                count = intro_text.lower().count(first)
+                if count >= 5 and count > best_count:
+                    best_count     = count
+                    best_candidate = char.name
+            if best_candidate:
+                narrator_name           = best_candidate
+                primer["narrator_name"] = narrator_name
+                self.logger.info(f"First Person narrator corrected to: '{narrator_name}' ({best_count} mentions in intro)")
+            else:
+                narrator_name           = "Narrator"
+                primer["narrator_name"] = "Narrator"
+                self.logger.warning("Could not confidently identify First Person narrator — defaulting to 'Narrator'")
+
+        # Resolve narrator alias to canonical
+        narrator_canonical = alias_map.get(narrator_name.lower())
+        if narrator_canonical:
+            narrator_name           = narrator_canonical
+            primer["narrator_name"] = narrator_name
+            self.logger.info(f"Narrator name resolved to canonical: '{narrator_name}'")
+
         results_map: Dict[int, str] = {}
         for u in all_units:
             if not u.is_quote:
                 results_map[u.uid] = narrator_name
 
-        narration_count = total_units - total_quotes
-        self.logger.info(
-            f"Pre-tagged {narration_count} narration units locally as '{narrator_name}'"
-        )
+        self.logger.info(f"Pre-tagged {total_units - total_quotes} narration units as '{narrator_name}'")
 
-        # -- 5. Heuristic Anchoring (NEW) ----------------------------------
-        heuristic_tags, untagged_quotes = self._apply_attribution_heuristics(
-            all_units, known_char_names, narrator_name
-        )
-        results_map.update(heuristic_tags)
+        # 5. Build scene windows
+        system_prompt = self._build_scene_system_prompt(primer, known_chars_str)
+        scenes        = self._build_scene_windows(full_text, all_units)
+        total_scenes  = len(scenes)
 
-        # -- 6. Batch remaining quotes for LLM -----------------------------
-        if not untagged_quotes:
-            self.logger.info("All quotes tagged by heuristics — skipping LLM!")
-            quote_batches = []
-        else:
-            quote_batches = self._build_adaptive_batches(untagged_quotes)
+        # 6. Async scene attribution
+        llm_processing_time = 0.0
+        scene_times: List[float] = []
 
-        total_batches = len(quote_batches)
-        system_prompt = self._build_system_prompt(primer)
-
-        # -- 7. Async LLM Processing ---------------------------------------
-        if total_batches > 0:
-            self.logger.info(
-                f"Processing {total_batches} batches with {concurrency} concurrent requests..."
-            )
-
-            # Estimate time
-            est_secs_per_batch = 15  # Much faster with pipe format
-            est_total_secs = (total_batches / concurrency) * est_secs_per_batch
-            self.logger.info(
-                f"*** Estimated LLM time: {self._format_duration(est_total_secs)} ***"
-            )
-
-            batch_times: List[float] = []
-            completed_count = 0
+        if total_scenes > 0:
+            self.logger.info(f"Processing {total_scenes} scenes @ concurrency={concurrency}")
+            completed_count  = 0
             processing_start = time.time()
+            semaphore        = asyncio.Semaphore(concurrency)
 
-            # Semaphore for concurrency control
-            semaphore = asyncio.Semaphore(concurrency)
-
-            async def process_batch(batch_idx: int, units: List[TextUnit], client: httpx.AsyncClient):
+            async def process_scene(_idx: int, scene: Dict[str, Any], client: httpx.AsyncClient) -> None:
                 nonlocal completed_count
                 async with semaphore:
-                    t0 = time.time()
-                    # Build context from previous batches (simplified — no chain dependencies)
-                    resolved_context = ""
-                    mapping = await self._classify_batch_async(
-                        client, units, known_chars_str, system_prompt, resolved_context
-                    )
-                    duration = time.time() - t0
+                    t0      = time.time()
+                    mapping = await self._classify_scene_async(
+                        client, scene, system_prompt, alias_map)
+                    dur     = time.time() - t0
 
-                    # First Person normalization
+                    # First-person normalisation — "Narrator" and "I" → narrator_name
                     if primer.get("pov") == "First Person" and narrator_name != "Narrator":
                         for uid in list(mapping.keys()):
-                            if mapping[uid] == "Narrator":
+                            if mapping[uid] in ("Narrator", "I"):
                                 mapping[uid] = narrator_name
 
-                    # Update results
-                    results_map.update(mapping)
-                    batch_times.append(duration)
+                    validated_mapping = {
+                        uid: self._validate_attribution(uid, spk, all_units, alias_map)
+                        for uid, spk in mapping.items()
+                    }
+                    results_map.update(validated_mapping)
+                    
+                    scene_times.append(dur)
                     completed_count += 1
 
-                    # Progress logging
-                    elapsed = time.time() - processing_start
-                    percent = round((completed_count / total_batches) * 100, 1)
-                    remaining = total_batches - completed_count
-                    avg_bt = sum(batch_times) / len(batch_times)
-                    eta_secs = (remaining / concurrency) * avg_bt
-                    eta_fmt = self._format_duration(eta_secs)
-                    elapsed_fmt = self._format_duration(elapsed)
+                    elapsed  = time.time() - processing_start
+                    pct      = round(completed_count / total_scenes * 100, 1)
+                    avg_t    = sum(scene_times) / len(scene_times)
+                    eta_secs = ((total_scenes - completed_count) / concurrency) * avg_t
+                    eta_fmt  = self._format_duration(eta_secs)
 
                     self.logger.info(
-                        f"Batch {completed_count}/{total_batches} ({len(units)} units, {duration:.1f}s) | "
-                        f"{percent}% | Elapsed: {elapsed_fmt} | ETA: {eta_fmt}"
+                        f"Scene {completed_count}/{total_scenes} "
+                        f"({len(scene['quotes'])} quotes, {dur:.1f}s) | "
+                        f"{pct}% | elapsed {self._format_duration(elapsed)} | ETA {eta_fmt}"
                     )
-
                     if progress_callback:
                         progress_callback({
-                            "percent_complete": percent,
-                            "batches_completed": completed_count,
-                            "total_batches": total_batches,
+                            "percent_complete":              pct,
+                            "batches_completed":             completed_count,
+                            "total_batches":                 total_scenes,
                             "estimated_remaining_formatted": eta_fmt,
-                            "estimated_remaining_seconds": eta_secs,
-                            "avg_batch_time": round(avg_bt, 2),
+                            "estimated_remaining_seconds":   eta_secs,
+                            "avg_batch_time":                round(avg_t, 2),
+                            "units_per_second":              round(len(scene["quotes"]) / max(dur, 0.01), 2),
                         })
 
-                    return mapping
-
-            # Fire all batches concurrently
             async with httpx.AsyncClient() as client:
-                tasks = [
-                    process_batch(i, batch, client)
-                    for i, batch in enumerate(quote_batches)
-                ]
-                await asyncio.gather(*tasks)
+                await asyncio.gather(*[
+                    process_scene(i, scene, client)
+                    for i, scene in enumerate(scenes)
+                ])
 
             llm_processing_time = time.time() - processing_start
-            self.logger.info(
-                f"LLM processing complete in {self._format_duration(llm_processing_time)}"
-            )
-            if batch_times:
+            self.logger.info(f"Scene attribution done in {self._format_duration(llm_processing_time)}")
+            if scene_times:
                 self.logger.info(
-                    f"Batch stats: avg={sum(batch_times)/len(batch_times):.1f}s | "
-                    f"min={min(batch_times):.1f}s | max={max(batch_times):.1f}s"
+                    f"Scene stats: avg={sum(scene_times)/len(scene_times):.1f}s | "
+                    f"min={min(scene_times):.1f}s | max={max(scene_times):.1f}s"
                 )
         else:
-            llm_processing_time = 0
-            batch_times = []
+            self.logger.error(f"ISSUE getting scene quotes")
+        
+        # 7. Heuristic recovery for missed quotes
+        missed_before_recovery = [u for u in all_units if u.is_quote and u.uid not in results_map]
+        if missed_before_recovery:
+            self.logger.info(f"Attempting heuristic recovery for {len(missed_before_recovery)} missed quotes...")
+            recovered = 0
 
-        # -- 8. Reassembly & Merge -----------------------------------------
-        self.logger.info("Reassembling segments and merging adjacent speakers...")
-        reassembly_start = time.time()
+            all_names    = sorted(alias_map.keys(), key=len, reverse=True)
+            name_pat_str = "|".join(re.escape(n) for n in all_names if len(n) >= 2)
+            speech_re    = re.compile(
+                rf'\b({name_pat_str})\s+({SPEECH_VERBS})\b'
+                rf'|({SPEECH_VERBS})\s+({name_pat_str})\b',
+                re.IGNORECASE
+            )
 
-        final_segments: List[Dict[str, Any]] = []
+            for u in missed_before_recovery:
+                idx = self._uid_to_idx.get(u.uid, 0)
+
+                # Check narration AFTER the quote
+                for j in range(idx + 1, min(len(all_units), idx + 5)):
+                    next_u = all_units[j]
+                    if next_u.is_quote:
+                        break
+                    m = speech_re.search(next_u.text)
+                    if m:
+                        raw       = (m.group(1) or m.group(4) or "").strip()
+                        if raw:
+                            canonical = alias_map.get(raw.lower(), raw.title())
+                            results_map[u.uid] = canonical
+                            recovered += 1
+                            break
+
+                # Check narration BEFORE the quote
+                if u.uid not in results_map:
+                    for j in range(max(0, idx - 4), idx):
+                        prev_u = all_units[j]
+                        if prev_u.is_quote:
+                            continue
+                        m = speech_re.search(prev_u.text)
+                        if m:
+                            raw       = (m.group(1) or m.group(4) or "").strip()
+                            if raw:
+                                canonical = alias_map.get(raw.lower(), raw.title())
+                                results_map[u.uid] = canonical
+                                recovered += 1
+                                break
+
+                # Check if previous quote has same speaker (continuation — no narration gap)
+                if u.uid not in results_map:
+                    for j in range(idx - 1, max(0, idx - 4), -1):
+                        prev_u = all_units[j]
+                        if prev_u.is_quote and prev_u.uid in results_map:
+                            gap_units     = all_units[j + 1:idx]
+                            has_narration = any(not gu.is_quote for gu in gap_units)
+                            if not has_narration:
+                                results_map[u.uid] = results_map[prev_u.uid]
+                                recovered += 1
+                            break
+
+            self.logger.info(f"Heuristic recovery: recovered {recovered}/{len(missed_before_recovery)} missed quotes")
+
+        # 8. Reassembly
+        self.logger.info("Reassembling segments...")
+        final_segments: List[Dict[str, Any]]      = []
         current_segment: Optional[Dict[str, Any]] = None
 
         for unit in all_units:
-            speaker = results_map.get(unit.uid, narrator_name)
+            speaker = results_map.get(unit.uid, "Unknown" if unit.is_quote else narrator_name)
 
             if current_segment is None:
-                current_segment = {
-                    "speaker": speaker,
-                    "text": unit.text,
-                    "source_chunk_ids": list(unit.source_chunk_ids),
-                }
-            elif current_segment["speaker"] == speaker:
+                current_segment = {"speaker": speaker, "text": unit.text, 
+                                "chunk_id": unit.chunk_id, "is_quote": unit.is_quote}
+            elif (
+                current_segment["speaker"] == speaker
+                and not unit.is_quote                          # ← never merge quotes
+                and not current_segment["is_quote"]            # ← never merge into a quote
+                and (unit.chunk_id is None or unit.chunk_id == current_segment["chunk_id"])
+            ):
                 current_segment["text"] += unit.text
-                current_segment["source_chunk_ids"] = sorted(
-                    set(current_segment["source_chunk_ids"] + unit.source_chunk_ids)
-                )
             else:
                 final_segments.append(current_segment)
-                current_segment = {
-                    "speaker": speaker,
-                    "text": unit.text,
-                    "source_chunk_ids": list(unit.source_chunk_ids),
-                }
+                current_segment = {"speaker": speaker, "text": unit.text,
+                                "chunk_id": unit.chunk_id, "is_quote": unit.is_quote}
 
         if current_segment:
             final_segments.append(current_segment)
 
-        reassembly_time = time.time() - reassembly_start
-        total_time = time.time() - start_time
+        # 9. Filter empty/junk segments
+        STRIP_CHARS   = " \t\n\r\u201c\u201d\u2018\u2019\"\'"
+        before_filter = len(final_segments)
+        final_segments = [
+            s for s in final_segments
+            if len(s.get("text", "").strip(STRIP_CHARS)) >= 2
+        ]
+        dropped = before_filter - len(final_segments)
+        if dropped:
+            self.logger.info(f"Filtered {dropped} empty/junk segments")
 
-        # -- Final statistics -----------------------------------------------
-        self.logger.info(f"Reassembly complete in {self._format_duration(reassembly_time)}")
-        self.logger.info(f"Created {len(final_segments)} final segments from {total_units} units")
-        compression = round(total_units / max(len(final_segments), 1), 2)
-        self.logger.info(f"Compression ratio: {compression}x")
+        # 10. Post-processing normalization
+        is_first_person = primer.get("pov") == "First Person"
 
+        first_person_starters = re.compile(
+            r'^[\"\u201c]?\s*I\s+(\'m|was|said|asked|told|thought|knew|felt|saw|heard|'
+            r'wanted|needed|tried|started|turned|looked|went|came|got|had|didn\'t|couldn\'t|'
+            r'wouldn\'t|shouldn\'t|can\'t|won\'t|don\'t|am|will|would|could|should|might|must)',
+            re.IGNORECASE
+        )
+
+        for seg in final_segments:
+            canonical = alias_map.get(seg["speaker"].lower())
+            if canonical and canonical != seg["speaker"]:
+                seg["speaker"] = canonical
+                continue
+
+            if (
+                is_first_person
+                and narrator_name != "Narrator"
+                and seg["speaker"] in ("Unknown", "Narrator", "I")
+            ):
+                text = seg["text"].strip()
+                if first_person_starters.match(text):
+                    seg["speaker"] = narrator_name
+
+            if seg["speaker"] == "I" and is_first_person and narrator_name != "Narrator":
+                seg["speaker"] = narrator_name
+
+        # Re-merge adjacent same-speaker NARRATION segments after normalization
+        # is_quote is still present here — used as guard, stripped at end
+        merged_segments: List[Dict[str, Any]] = []
+        current_m: Optional[Dict[str, Any]]   = None
+        for seg in final_segments:
+            if current_m is None:
+                current_m = dict(seg)
+            elif (
+                current_m["speaker"] == seg["speaker"]
+                and not seg.get("is_quote")          # never merge quotes
+                and not current_m.get("is_quote")    # never merge into a quote
+                and (seg["chunk_id"] is None or seg["chunk_id"] == current_m["chunk_id"])
+            ):
+                current_m["text"] += seg["text"]
+            else:
+                merged_segments.append(current_m)
+                current_m = dict(seg)
+        if current_m:
+            merged_segments.append(current_m)
+
+        # Strip is_quote now that re-merge is done
+        final_segments = [
+            {k: v for k, v in s.items() if k != "is_quote"}
+            for s in merged_segments
+        ]
+
+        # 11. Write missed quotes to moe.txt
+        still_missed = [u for u in all_units if u.is_quote and u.uid not in results_map]
+        if still_missed:
+            try:
+                with open("moe.txt", "w", encoding="utf-8") as f:
+                    f.write(f"MISSED QUOTES REPORT\n")
+                    f.write(f"Book:  {book_title}\n")
+                    f.write(f"Total: {len(still_missed)} missed / {total_quotes} total quotes\n")
+                    f.write(f"{'=' * 60}\n\n")
+                    for i, u in enumerate(still_missed, 1):
+                        idx       = self._uid_to_idx.get(u.uid, 0)
+                        prev_text = ""
+                        next_text = ""
+                        for j in range(max(0, idx - 3), idx):
+                            if not all_units[j].is_quote:
+                                prev_text += all_units[j].text.strip() + " "
+                        for j in range(idx + 1, min(len(all_units), idx + 4)):
+                            if not all_units[j].is_quote:
+                                next_text += all_units[j].text.strip() + " "
+                        f.write(f"─── Missed Quote #{i} (uid={u.uid}) ───\n")
+                        if prev_text.strip():
+                            f.write(f"  [Before] {prev_text.strip()[:200]}\n")
+                        f.write(f"  [QUOTE]  {u.text.strip()[:300]}\n")
+                        if next_text.strip():
+                            f.write(f"  [After]  {next_text.strip()[:200]}\n")
+                        f.write("\n")
+                self.logger.info(f"Missed quotes written to moe.txt ({len(still_missed)} quotes)")
+            except Exception as e:
+                self.logger.warning(f"Failed to write moe.txt: {e}")
+
+        # 12. Final stats
+        total_time     = time.time() - start_time
+        covered_quotes = len([u for u in all_units if u.is_quote and u.uid in results_map])
+        compression    = round(total_units / max(len(final_segments), 1), 2)
         speaker_counts: Dict[str, int] = {}
         for seg in final_segments:
             speaker_counts[seg["speaker"]] = speaker_counts.get(seg["speaker"], 0) + 1
 
-        self.logger.info(
-            f"Speaker distribution: "
-            f"{dict(sorted(speaker_counts.items(), key=lambda x: x[1], reverse=True))}"
-        )
-        self.logger.info(f"Total processing time: {self._format_duration(total_time)}")
+        self.logger.info(f"Quote coverage: {covered_quotes}/{total_quotes} ({round(covered_quotes/max(total_quotes,1)*100,1)}%)")
+        self.logger.info(f"Final segments: {len(final_segments)} (compression {compression}x)")
+        self.logger.info(f"Speaker distribution: {dict(sorted(speaker_counts.items(), key=lambda x: x[1], reverse=True))}")
+        self.logger.info(f"Total time: {self._format_duration(total_time)}")
 
         return {
             "characters": [c.__dict__ for c in characters],
-            "segments": final_segments,
-            "primer": primer,
+            "segments":   final_segments,
+            "primer":     primer,
             "meta": {
-                "processing_time": total_time,
-                "total_segments": len(final_segments),
-                "total_units": total_units,
-                "compression_ratio": compression,
-                "llm_processing_time": llm_processing_time,
-                "reassembly_time": reassembly_time,
-                "heuristic_tagged_quotes": len(heuristic_tags),
-                "llm_tagged_quotes": len(untagged_quotes),
-                "total_quotes": total_quotes,
-                "heuristic_coverage_pct": round(len(heuristic_tags) / max(total_quotes, 1) * 100, 1),
-                "avg_batch_time": sum(batch_times) / len(batch_times) if batch_times else 0,
-                "min_batch_time": min(batch_times) if batch_times else 0,
-                "max_batch_time": max(batch_times) if batch_times else 0,
-                "total_batches": total_batches,
-                "concurrency": concurrency,
-                "speaker_distribution": speaker_counts,
+                "processing_time":        total_time,
+                "total_segments":         len(final_segments),
+                "total_units":            total_units,
+                "compression_ratio":      compression,
+                "llm_processing_time":    llm_processing_time,
+                "total_quotes":           total_quotes,
+                "covered_quotes":         covered_quotes,
+                "quote_coverage_pct":     round(covered_quotes / max(total_quotes, 1) * 100, 1),
+                "avg_scene_time":         sum(scene_times) / len(scene_times) if scene_times else 0,
+                "min_scene_time":         min(scene_times) if scene_times else 0,
+                "max_scene_time":         max(scene_times) if scene_times else 0,
+                "total_scenes":           total_scenes,
+                "concurrency":            concurrency,
+                "speaker_distribution":   speaker_counts,
                 "book_context": {
-                    "pov": primer.get("pov"),
+                    "pov":      primer.get("pov"),
                     "narrator": primer.get("narrator_name"),
-                    "tense": primer.get("tense"),
+                    "tense":    primer.get("tense"),
                 },
             },
         }
 
-    # ====================================================================
-    # Helpers — Primer & Character Discovery (sync — only called once)
-    # ====================================================================
-
-    def _generate_book_primer(self, intro_text: str) -> Dict[str, str]:
-        prompt = (
-            "Analyze the following opening text of a novel.\n"
-            "Determine:\n"
-            "1. POV: 'First Person' (I) or 'Third Person' (He/She).\n"
-            "2. Narrator Name: If First Person, who is the 'I'? If unknown, use 'Narrator'.\n"
-            "3. Tense: 'Past' or 'Present'.\n\n"
-            "Return JSON: {\"pov\": \"...\", \"narrator_name\": \"...\", \"tense\": \"...\"}\n\n"
-            f"TEXT:\n{intro_text[:5000]}"
-        )
-
-        try:
-            resp = self.sync_client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=200,
-                response_format={"type": "json_object"},
-            )
-            data = json.loads(resp.choices[0].message.content)
-            return {
-                "pov": data.get("pov", "Third Person"),
-                "narrator_name": data.get("narrator_name", "Narrator"),
-                "tense": data.get("tense", "Past"),
-            }
-        except Exception as e:
-            self.logger.warning(f"Failed to generate book primer: {e}, using defaults")
-            return {"pov": "Third Person", "narrator_name": "Narrator", "tense": "Past"}
-
-    def _discover_characters(self, text: str) -> List[Character]:
-        prompt = (
-                "You are an information extraction system. Your task is to identify ONLY fictional characters mentioned in the text.\n\n"
-
-                "A character is defined as a specific person or being that participates in the story. "
-                "Include named individuals, aliases, and clearly implied unnamed characters (e.g., 'the innkeeper') "
-                "ONLY if they refer to a person acting in the narrative.\n\n"
-
-                "STRICT EXCLUSION RULES:\n"
-                "- Do NOT include places, organizations, titles, roles, species, objects, or abstract concepts.\n"
-                "- Do NOT include generic groups (e.g., 'the soldiers', 'the crowd').\n"
-                "- Do NOT include job titles or ranks unless they clearly refer to a specific individual.\n"
-                "- If you are unsure whether something is a character, OMIT it.\n\n"
-
-                "For each valid character, extract:\n"
-                "- name: the exact name or identifier used in the text\n"
-                "- gender: male/female/unknown (infer only if strongly implied)\n"
-                "- description: a brief factual description based ONLY on the provided text\n\n"
-
-                "Return ONLY valid JSON with this schema:\n"
-                "{\"characters\": [{\"name\": \"string\", \"gender\": \"string\", \"description\": \"string\"}]}\n\n"
-
-                "Do not add commentary. Do not explain reasoning. Output JSON only.\n\n"
-
-                f"TEXT:\n{text[:6000]}"
-        )
-        try:
-            resp = self.sync_client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=800,
-                response_format={"type": "json_object"},
-            )
-            data = json.loads(resp.choices[0].message.content)
-            chars = [
-                Character(c["name"], c.get("gender", "unknown"), c.get("description", ""))
-                for c in data.get("characters", [])
-            ]
-            if not any(c.name == "Narrator" for c in chars):
-                chars.insert(0, Character("Narrator", "NEUTRAL", "Narrator"))
-            return chars
-        except Exception:
-            return [Character("Narrator", "NEUTRAL", "Narrator")]
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
-        """Format seconds into a human-readable duration string."""
         if seconds < 60:
             return f"{seconds:.1f}s"
         elif seconds < 3600:
-            mins = seconds / 60
-            return f"{mins:.1f}m"
-        else:
-            hours = seconds / 3600
-            return f"{hours:.1f}h"
-
-    # ====================================================================
-    # Utility
-    # ====================================================================
-
-    #@staticmethod
-    #def _format_duration(seconds: float) -> str:
+            return f"{seconds / 60:.1f}m"
+        return f"{seconds / 3600:.1f}h"
