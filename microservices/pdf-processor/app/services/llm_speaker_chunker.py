@@ -594,10 +594,10 @@ class SpeakerChunker(Logger):
 
         raw_chars: List[Dict] = []
         try:
-            data = self.api.sync_rag_chat(
+            data, _ = self.api.sync_rag_chat(
                 prompt_messages=[["system", system_msg], ["user", user_msg]],
                 inputs={},
-                search_query_template="CharacterList",
+                search_query_template=None,
                 # deployment_name="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
                 timeout=120,
             )

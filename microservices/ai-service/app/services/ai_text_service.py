@@ -226,7 +226,6 @@ class AITextService:
         )
 
         # print("CHAT COMPLETION RESPONSE\n" + response.model_dump_json(indent=2))
-
         return response.choices[0].message.content, snippets
     
     # ------------------------------------------------------------------
@@ -277,7 +276,7 @@ def _base_params(inputs: Optional[dict[str, Any]]) -> dict[str, Any]:
     requiring callers to pass boilerplate.
     """
     defaults: dict[str, Any] = {
-        "max_tokens": 2048,
+        "max_tokens": 8192,
         "temperature": 0.2,
     }
     if inputs:

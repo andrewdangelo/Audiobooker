@@ -18,7 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from app.core.config_settings import settings
 from app.core.logging_config import setup_logging
-from app.routers import ai_generation, voice_library
+from app.routers import ai_generation, voice_library, health
 from app.services.voice_library import VoiceLibraryManager
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -76,6 +76,12 @@ app.add_middleware(
 
 # Apply essential info to app object
 app.__version__ = __version__
+
+app.include_router(
+    health.router, 
+    prefix=f"{settings.API_V1_PREFIX}/health", 
+    tags=["-HEALTH-"]
+)
 
 app.include_router(
     ai_generation.router, 
