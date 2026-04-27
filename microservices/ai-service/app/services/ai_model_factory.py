@@ -71,7 +71,7 @@ class _PresetRegistry:
             self.provider: ModelProvider = ModelProvider(data["provider"])
             self.deployment_name: str = data["deployment_name"]
             self.context_window: Any = data.get("context_window_tokens")
-            self.output_tokens: Any = data.get("output_tokens")
+            self.output_tokens: Any = data.get("max_output_tokens")
             self.description: str = data.get("description", "")
  
             # Build the base URL per provider so the factory doesn't have to.

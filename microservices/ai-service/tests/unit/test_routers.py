@@ -2,8 +2,7 @@
 Unit Tests — AI Generation Router (ai_generation.py)
 ======================================================
 Tests the HTTP layer: routing, request validation, response shape, and error
-handling. Uses FastAPI's TestClient (synchronous) and AsyncClient for async
-routes.
+handling.
 
 What we test here vs. in test_ai_text_service.py:
   - HERE:  Does the endpoint parse the request body correctly?
@@ -11,9 +10,6 @@ What we test here vs. in test_ai_text_service.py:
            Does it format the JSON response correctly?
            Does a service exception become a 500 with a useful detail field?
   - THERE: Does the service itself do the right thing internally?
-
-This separation means a broken service test doesn't mask a broken routing test
-and vice versa.
 """
 
 import pytest
@@ -23,15 +19,15 @@ from fastapi import FastAPI
 
 
 # ---------------------------------------------------------------------------
-# App fixture — mounts only the router under test, no other dependencies
+# App + client fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def app():
     """
-    Create a minimal FastAPI app with only the AI generation router mounted.
-    This is faster than booting the full app and avoids startup side effects
-    (DB connections, etc.).
+    Minimal FastAPI app with only the AI generation router mounted.
+    Faster than booting the full app and avoids startup side effects
+    like DB connections.
     """
     from app.routers.ai_generation import router
     test_app = FastAPI()
@@ -81,18 +77,21 @@ class TestChatEndpoint:
         assert response.status_code == 500
         assert "Cloudflare timeout" in response.json()["detail"]
 
-    def test_422_when_prompt_messages_missing(self, client):
+    def test_422_when_prompt_messages_wrong_type(self, client):
         """
-        prompt_messages is required. Missing it must return 422 Unprocessable
-        Entity (FastAPI/Pydantic validation), not a 500 crash.
+        prompt_messages has a default value so omitting it won't 422.
+        Sending the wrong type (a string instead of a list) must 422.
         """
-        response = client.post("/chat", json={"provider": "cf"})
+        response = client.post("/chat", json={
+            "provider": "cf",
+            "prompt_messages": "this should be a list not a string",
+        })
         assert response.status_code == 422
 
     def test_default_provider_is_cf(self, client):
         """
         Provider defaults to CF. A request without an explicit provider must
-        still succeed and call the service (not crash on a missing enum value).
+        still succeed and pass CF to the service.
         """
         with patch(
             "app.routers.ai_generation.AITextService.chat",
@@ -103,9 +102,8 @@ class TestChatEndpoint:
             })
 
         assert response.status_code == 200
-        call_kwargs = mock_chat.call_args.kwargs
         from app.services.ai_model_factory import ModelProvider
-        assert call_kwargs["provider"] == ModelProvider.CF
+        assert mock_chat.call_args.kwargs["provider"] == ModelProvider.CF
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +129,11 @@ class TestRagChatEndpoint:
         assert body["answer"] == "RAG answer"
         assert body["context"] == fake_snippets
 
-    def test_passes_search_query_template_to_service(self, client):
+    def test_passes_search_query_text_to_service(self, client):
+        """
+        search_query_text (renamed from search_query_template) must be
+        forwarded to the service as-is.
+        """
         with patch(
             "app.routers.ai_generation.AITextService.chat_rag_web_context",
             new=AsyncMock(return_value=("answer", [])),
@@ -139,11 +141,39 @@ class TestRagChatEndpoint:
             client.post("/chat/web-rag", json={
                 "prompt_messages": [["user", "hi"]],
                 "provider": "cf",
-                "search_query_template": "latest AI news",
+                "search_query_text": "latest AI news",
             })
 
-        call_kwargs = mock_rag.call_args.kwargs
-        assert call_kwargs["search_query_template"] == "latest AI news"
+        assert mock_rag.call_args.kwargs["search_query_text"] == "latest AI news"
+
+    def test_search_query_text_defaults_to_none(self, client):
+        """
+        When search_query_text is omitted, the service receives None and
+        derives the query via LLM internally.
+        """
+        with patch(
+            "app.routers.ai_generation.AITextService.chat_rag_web_context",
+            new=AsyncMock(return_value=("answer", [])),
+        ) as mock_rag:
+            client.post("/chat/web-rag", json={
+                "prompt_messages": [["user", "hi"]],
+                "provider": "cf",
+            })
+
+        assert mock_rag.call_args.kwargs["search_query_text"] is None
+
+    def test_returns_500_when_service_raises(self, client):
+        with patch(
+            "app.routers.ai_generation.AITextService.chat_rag_web_context",
+            new=AsyncMock(side_effect=RuntimeError("Tavily down")),
+        ):
+            response = client.post("/chat/web-rag", json={
+                "prompt_messages": [["user", "hi"]],
+                "provider": "cf",
+            })
+
+        assert response.status_code == 500
+        assert "Tavily down" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

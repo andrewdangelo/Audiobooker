@@ -44,6 +44,7 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+proj-code-dump/
 
 # OS
 .DS_Store

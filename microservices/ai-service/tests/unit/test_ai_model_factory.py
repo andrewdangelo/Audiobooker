@@ -15,7 +15,16 @@ unit-test since you'd just be asserting that AsyncOpenAI() was called.
 """
 
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+# Resolve the path to ai_defaults.json once at module level.
+# __file__ is tests/unit/test_ai_model_factory.py
+# .parents[2] walks up: unit/ -> tests/ -> project root
+# Then we go into app/data/ai_defaults.json
+_AI_DEFAULTS_PATH = str(
+    Path(__file__).resolve().parents[2] / "app" / "data" / "ai_defaults.json"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -66,19 +75,14 @@ class TestModelTaskEnum:
 class TestPresetRegistry:
     """
     Tests the registry that wraps ai_defaults.json.
-    Uses the real file (it's static data) — this is an appropriate exception
-    to the "no real dependencies" rule because the JSON is checked into the
-    repo and never changes at runtime.
+    Uses the real file — appropriate because it is static checked-in data
+    that never changes at runtime.
     """
 
     @pytest.fixture
     def registry(self):
-        import os
         from app.services.ai_model_factory import _PresetRegistry
-        json_path = os.path.join(
-            os.path.dirname(__file__), "..", "app", "data", "ai_defaults.json"
-        )
-        return _PresetRegistry(json_path)
+        return _PresetRegistry(_AI_DEFAULTS_PATH)
 
     def test_chat_basic_preset_exists(self, registry):
         assert registry.get("chat-basic") is not None
@@ -110,6 +114,39 @@ class TestPresetRegistry:
 
 
 # ---------------------------------------------------------------------------
+# _PresetRegistry entry field correctness
+# ---------------------------------------------------------------------------
+
+class TestPresetRegistryEntryFields:
+    """
+    Regression guard for the output_tokens key name bug.
+    The JSON field is "max_output_tokens". Previously the code read
+    data.get("output_tokens") which always returned None. These tests
+    ensure the fix holds and the right values are coming through.
+    """
+
+    @pytest.fixture
+    def registry(self):
+        from app.services.ai_model_factory import _PresetRegistry
+        return _PresetRegistry(_AI_DEFAULTS_PATH)
+
+    def test_output_tokens_reads_correctly_for_chat_preset(self, registry):
+        """chat-basic has max_output_tokens: 32768 — must not be None."""
+        entry = registry.get("chat-basic")
+        assert entry.output_tokens is not None
+        assert entry.output_tokens == 32768
+
+    def test_output_tokens_is_none_for_embedding_preset(self, registry):
+        """embedding-768 has max_output_tokens: null — must be None, not crash."""
+        entry = registry.get("embedding-768")
+        assert entry.output_tokens is None
+
+    def test_context_window_reads_correctly(self, registry):
+        entry = registry.get("chat-basic")
+        assert entry.context_window == 128000
+
+
+# ---------------------------------------------------------------------------
 # _choose_valid_deployment
 # ---------------------------------------------------------------------------
 
@@ -133,7 +170,9 @@ class TestChooseValidDeployment:
             "model-a": self._make_entry("model-a", "txt"),
             "model-b": self._make_entry("model-b", "txt"),
         }
-        result = ModelFactory._choose_valid_deployment(entries, ModelTask.TXT, deployment_name="model-a")
+        result = ModelFactory._choose_valid_deployment(
+            entries, ModelTask.TXT, deployment_name="model-a"
+        )
         assert result.name == "model-a"
 
     def test_repository_match_as_fallback(self):
@@ -141,7 +180,9 @@ class TestChooseValidDeployment:
         entries = {
             "ep-1": self._make_entry("ep-1", "txt", repository="gpt-4"),
         }
-        result = ModelFactory._choose_valid_deployment(entries, ModelTask.TXT, model_name="gpt-4")
+        result = ModelFactory._choose_valid_deployment(
+            entries, ModelTask.TXT, model_name="gpt-4"
+        )
         assert result.name == "ep-1"
 
     def test_raises_when_no_deployments_for_task(self):
@@ -165,7 +206,7 @@ class TestChooseValidDeployment:
     def test_task_filtering_excludes_wrong_task(self):
         """
         An embedding model should never be returned for a TXT task,
-        even if it's the only model in the list.
+        even if it is the only model in the list.
         """
         from app.services.ai_model_factory import ModelFactory, ModelTask
         entries = {
@@ -201,7 +242,6 @@ class TestResolveEndpointDevMode:
                     preset="chat-basic",
                 )
 
-        # Live lookup was never called
         mock_live.assert_not_called()
         assert result.name == "chat-basic"
 
@@ -228,11 +268,11 @@ class TestResolveEndpointDevMode:
         with patch("app.services.ai_model_factory._is_dev", return_value=True):
             with pytest.raises(ValueError, match="provider"):
                 await ModelFactory._resolve_endpoint(
-                    provider=ModelProvider.HF,   # wrong provider for a CF preset
+                    provider=ModelProvider.HF,
                     model_task=ModelTask.TXT,
                     deployment_name=None,
                     model_name=None,
-                    preset="chat-basic",          # chat-basic is CF
+                    preset="chat-basic",  # chat-basic is CF
                 )
 
     async def test_prod_mode_ignores_preset_and_hits_live(self):
@@ -253,7 +293,7 @@ class TestResolveEndpointDevMode:
                     model_task=ModelTask.TXT,
                     deployment_name="live-deployment",
                     model_name=None,
-                    preset="chat-basic",  # should be ignored in prod
+                    preset="chat-basic",  # ignored in prod
                 )
 
         mock_live.assert_called_once()
