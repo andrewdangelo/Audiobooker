@@ -18,7 +18,7 @@ import asyncio
 from app.core.config_settings import settings
 from app.core.redis_manager import redis_manager
 from app.core.logging_config import setup_logging
-from app.routers import (health, tts, audio_stitching)
+from app.routers import (health, tts, audio_stitching, book_generation)
 from app.services import audio_stitcher
 
 __version__ = settings.TEST_VERSION
@@ -77,6 +77,13 @@ app.include_router(
     audio_stitching.router, 
     prefix=f"{settings.API_V1_PREFIX}/audio-stitch",
     tags=["-Audio Stitching-"]
+)
+
+# Book generation: triggered by pdf-processor, polls like pdf-processor jobs
+app.include_router(
+    book_generation.router,
+    prefix=f"{settings.API_V1_PREFIX}/book-generation",
+    tags=["-Book Generation-"]
 )
 
 @app.on_event("startup")

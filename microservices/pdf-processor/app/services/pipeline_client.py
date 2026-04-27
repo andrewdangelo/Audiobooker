@@ -79,3 +79,44 @@ async def notify_backend_conversion_complete(
     except Exception as e:
         logger.error("Backend conversion notify failed: %s", e, exc_info=True)
         return None
+
+
+async def trigger_book_generation(
+    *,
+    book_id: str,
+    script_r2_key: str,
+    user_id: str,
+) -> Optional[str]:
+    """
+    Tell tts-infrastructure to start async audio generation for a book.
+    Called after backend confirms the book record exists and script_r2_key is set.
+ 
+    Returns the tts-infrastructure job_id (for logging/debugging), or None on failure.
+    Failure here does NOT fail the pdf-processor job — generation can be re-triggered.
+    """
+    base = (settings.TTS_SERVICE_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        logger.warning("TTS_SERVICE_BASE_URL not configured; skipping book generation trigger")
+        return None
+ 
+    url = f"{base}/book-generation/start"
+    payload: Dict[str, Any] = {
+        "book_id": book_id,
+        "script_r2_key": script_r2_key,
+        "user_id": user_id,
+    }
+    headers = {"X-Internal-Service-Key": settings.INTERNAL_SERVICE_KEY}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            gen_job_id = data.get("job_id")
+            logger.info(
+                "Book generation triggered — book_id=%s tts_job_id=%s",
+                book_id, gen_job_id,
+            )
+            return gen_job_id
+    except Exception as e:
+        logger.error("trigger_book_generation failed (book %s): %s", book_id, e)
+        return None

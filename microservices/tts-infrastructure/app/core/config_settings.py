@@ -70,6 +70,12 @@ class Settings(BaseSettings):
         default="change-me-internal-key",
         description="Shared secret used to authenticate inter-service HTTP calls"
     )
+    
+    # ai-service base URL (for TTS inference calls)
+    AI_SERVICE_BASE_URL: str = Field(
+        default="http://127.0.0.1:8000",
+        description="Base URL of ai-service (e.g. http://127.0.0.1:8000/api/v1/ai)"
+    )
 
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
