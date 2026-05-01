@@ -17,7 +17,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Header
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 from app.core.config_settings import settings
 from app.services.book_generation_service import (
@@ -66,7 +66,7 @@ class JobStatusResponse(BaseModel):
     total_chunks: Optional[int] = None
     chunks_completed: Optional[int] = None
     chunks_failed: Optional[int] = None
-    voice_id: Optional[str] = None
+    voice_ids: Optional[List[str]] = None   # was: voice_id: Optional[str]
     error: Optional[str] = None
     completed_at: Optional[str] = None
     result: Optional[dict] = None
@@ -154,7 +154,7 @@ async def get_job_status(job_id: str):
         total_chunks=_int(job.get("total_chunks")) or None,
         chunks_completed=_int(job.get("chunks_completed")) or None,
         chunks_failed=_int(job.get("chunks_failed")) or None,
-        voice_id=job.get("voice_id"),
+        voice_ids=_parse_result(job.get("voice_ids")),
         error=job.get("error"),
         completed_at=job.get("completed_at"),
         result=_parse_result(job.get("result")),

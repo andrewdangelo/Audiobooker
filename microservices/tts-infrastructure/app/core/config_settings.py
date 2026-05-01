@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # ai-service base URL (for TTS inference calls)
     AI_SERVICE_BASE_URL: str = Field(
         default="http://127.0.0.1:8000",
-        description="Base URL of ai-service (e.g. http://127.0.0.1:8000/api/v1/ai)"
+        description="Base URL of ai-service (e.g. http://127.0.0.1:8000/api/v1/ai_service)"
     )
 
     @validator("ENVIRONMENT")

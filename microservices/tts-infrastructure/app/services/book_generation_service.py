@@ -216,18 +216,21 @@ async def run_book_generation(
 
         await update_job(job_id, {
             "assignment_map": json.dumps(assignment_map),
+            "total_chunks": total,
             "message": f"Voices assigned to {len(assignment_map)} characters",
         })
+        
+        unique_voice_ids = set(assignment_map.values())
 
         # ── Step 3: build voice_cache — download each unique WAV once ────
         # voice_cache: {voice_id: bytes}
         await update_job(job_id, {
             "pipeline_stage": "downloading_voices",
             "progress": 15,
-            "message": "Downloading voice samples",
+            "message": f"Downloading {len(unique_voice_ids)} unique voice sample(s)",
+            "voice_ids": json.dumps(list(unique_voice_ids))
         })
 
-        unique_voice_ids = set(assignment_map.values())
         voice_cache: Dict[str, bytes] = {}
 
         for voice_id in unique_voice_ids:
