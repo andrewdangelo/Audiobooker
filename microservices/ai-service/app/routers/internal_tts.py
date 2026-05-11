@@ -4,8 +4,9 @@ Internal TTS Router
 Called by tts-infrastructure (and nothing else) to do the actual HF inference.
 Keeps all model clients inside ai-service where HF credentials live.
 
-Endpoint:
-    POST /tts/generate-chunk  — voice sample + text → WAV bytes
+Endpoints:
+    POST /tts/warmup            — wake up HF endpoint, block until ready
+    POST /tts/generate-chunk    — voice sample + text → WAV bytes
     POST /voice-library/assign-single  — pick a random standard voice_id
 """
 
@@ -55,6 +56,26 @@ class AssignVoiceResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@router.post("/tts/warmup")
+async def warmup_tts(
+    x_internal_service_key: Optional[str] = Header(None),
+):
+    """
+    Wake up the HF TTS endpoint and block until it is ready.
+    Call this once before starting the generation loop to avoid
+    concurrent chunk tasks racing on cold-start initialization.
+    """
+    _require_internal_key(x_internal_service_key)
+
+    try:
+        await AISpeechService.warmup()
+    except Exception as e:
+        logger.error("TTS warmup failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"TTS warmup error: {e}")
+
+    return {"status": "ready"}
+
 
 @router.post("/tts/generate-chunk")
 async def generate_chunk(

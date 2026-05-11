@@ -14,6 +14,7 @@ Redis key: book_gen_job:{job_id}
 R2 output:  audiobook_chunks/{book_id}/{chunk_index}.wav
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -33,6 +34,12 @@ JOB_TTL = 60 * 60 * 48  # 48 hours
 
 DEFAULT_EMOTION = "narrative, calm"
 DEFAULT_EMOTION_STRENGTH = 0.5
+
+# Max concurrent TTS calls to ai-service at any one time.
+# Tune this against your HF endpoint's capacity.
+# 5 is a safe starting point — increase if the endpoint handles it without
+# rate limiting, decrease if you see 429s or OOM errors on the HF side.
+TTS_CONCURRENCY = 5
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +128,6 @@ async def _assign_voices(characters: List[Dict]) -> Dict[str, str]:
         if not voice_id:
             raise ValueError("ai-service returned no voice_id")
 
-        # Map every character name to the same narrator voice_id
         assignment_map = {char["name"]: voice_id for char in characters}
         logger.info("Voice assignment: %d characters → voice_id=%s", len(characters), voice_id)
         return assignment_map
@@ -129,6 +135,20 @@ async def _assign_voices(characters: List[Dict]) -> Dict[str, str]:
     except Exception as e:
         logger.error("Voice assignment failed: %s", e)
         raise
+
+
+async def _warmup_tts() -> None:
+    """
+    Tell ai-service to initialize and wake up the TTS model before
+    the generation loop starts. Blocks until the model is ready.
+    Called once per job — ensures no chunk task races on initialization.
+    """
+    url = f"{settings.AI_SERVICE_BASE_URL.rstrip('/')}/internal/tts/warmup"
+    headers = {"X-Internal-Service-Key": settings.INTERNAL_SERVICE_KEY}
+    async with httpx.AsyncClient(timeout=400.0) as client:
+        resp = await client.post(url, headers=headers)
+        resp.raise_for_status()
+    logger.info("TTS model warmed up and ready")
 
 
 async def _call_tts(voice_bytes: bytes, text: str, emotion: str, emotion_strength: float) -> bytes:
@@ -145,10 +165,105 @@ async def _call_tts(voice_bytes: bytes, text: str, emotion: str, emotion_strengt
         "emotion": emotion,
         "emotion_strength": emotion_strength,
     }
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.content
+
+
+# ---------------------------------------------------------------------------
+# Concurrent chunk processor
+# ---------------------------------------------------------------------------
+
+async def _process_chunk(
+    *,
+    idx: int,
+    line: Dict,
+    session: aioboto3.Session,
+    voice_cache: Dict[str, bytes],
+    assignment_map: Dict[str, str],
+    fallback_voice_id: str,
+    book_id: str,
+    job_id: str,
+    semaphore: asyncio.Semaphore,
+    # Shared mutable state — written by index so no races between tasks
+    succeeded: List[Optional[str]],   # succeeded[idx] = R2 key or None
+    failed: List[Optional[int]],      # failed[idx] = idx or None
+    skipped: List[Optional[int]],     # skipped[idx] = idx or None
+    counter: Dict[str, int],
+) -> None:
+    """
+    Process a single script line: call TTS, upload chunk WAV to R2.
+    Acquires the semaphore before doing any work — at most TTS_CONCURRENCY
+    of these run simultaneously across the whole job.
+
+    Results written into pre-allocated lists by index — no ordering races.
+    Counter updates are safe without locks (asyncio is single-threaded).
+    """
+    text = line.get("text", "").strip()
+    speaker = line.get("speaker", "")
+
+    # Empty lines are skipped — not a failure, just no audio needed
+    if not text:
+        logger.debug("Job %s: skipping empty line %d", job_id, idx)
+        skipped[idx] = idx
+        counter["skipped"] += 1
+        return
+
+    voice_id = assignment_map.get(speaker)
+    if voice_id is None:
+        logger.warning(
+            "Job %s: unknown speaker '%s' at line %d — using fallback voice",
+            job_id, speaker, idx,
+        )
+        voice_id = fallback_voice_id
+
+    voice_bytes = voice_cache[voice_id]
+    emotion = line.get("emotion", DEFAULT_EMOTION)
+    emotion_strength = float(line.get("emotion_strength", DEFAULT_EMOTION_STRENGTH))
+
+    async with semaphore:
+        try:
+            audio_bytes = await _call_tts(voice_bytes, text, emotion, emotion_strength)
+            chunk_key = f"audiobook_chunks/{book_id}/{idx}.wav"
+            await _r2_upload(session, chunk_key, audio_bytes)
+            succeeded[idx] = chunk_key
+            counter["completed"] += 1
+            logger.debug("Job %s: chunk %d done (%s)", job_id, idx, speaker)
+
+        except Exception as e:
+            logger.error("Job %s chunk %d (speaker=%s) failed: %s", job_id, idx, speaker, e)
+            failed[idx] = idx
+            counter["failed"] += 1
+
+
+# ---------------------------------------------------------------------------
+# Progress reporter
+# ---------------------------------------------------------------------------
+
+async def _report_progress(
+    job_id: str,
+    counter: Dict[str, int],
+    total: int,
+    stop_event: asyncio.Event,
+) -> None:
+    """
+    Runs concurrently with the chunk tasks via asyncio.create_task.
+    Wakes up every 2 seconds and writes current progress to Redis.
+    Exits cleanly when stop_event is set after all chunk tasks finish.
+    """
+    while not stop_event.is_set():
+        done = counter["completed"] + counter["failed"] + counter["skipped"]
+        progress = 20 + int(done / total * 75) if total > 0 else 20
+        await update_job(job_id, {
+            "pipeline_stage": "tts_generation",
+            "progress": progress,
+            "chunks_completed": counter["completed"],
+            "chunks_failed": counter["failed"],
+            "chunks_skipped": counter["skipped"],
+            "message": f"Generating audio: {done}/{total} chunks",
+        })
+        await asyncio.sleep(2)
 
 
 # ---------------------------------------------------------------------------
@@ -156,27 +271,28 @@ async def _call_tts(voice_bytes: bytes, text: str, emotion: str, emotion_strengt
 # ---------------------------------------------------------------------------
 
 async def run_book_generation(
+    ctx: dict,
     job_id: str,
     book_id: str,
     script_r2_key: str,
     user_id: str,
 ) -> None:
     """
-    Full generation loop. Runs as a FastAPI BackgroundTask.
+    Full generation loop. Called by ARQ worker.
 
     Steps:
         1. Download script JSON from R2
-        2. Voice assignment — called ONCE with script["characters"]
-               Returns assignment_map: {character_name: voice_id}
+        2. Voice assignment — ONCE against characters list
+               → assignment_map: {character_name: voice_id}
         3. Build voice_cache — download each unique voice WAV once
-               voice_cache: {voice_id: bytes}
-        4. TTS loop over script lines
-               For each line:
-                 - look up speaker in assignment_map → voice_id
-                 - look up voice_id in voice_cache → voice_bytes
-                 - read emotion/emotion_strength from line (defaults if absent)
-                 - call ai-service TTS, upload WAV chunk to R2
-        5. Mark job completed (or failed)
+               → voice_cache: {voice_id: bytes}
+        3.5 Warm up TTS model — blocks until HF endpoint is ready
+        4. Concurrent TTS loop
+               - Semaphore caps concurrent HF calls at TTS_CONCURRENCY
+               - reporter task runs independently via create_task
+               - succeeded/failed/skipped tracked by index
+        5. Guard — all chunks failed → job failed
+        6. Mark completed with final chunk schema
     """
     session = aioboto3.Session()
 
@@ -204,8 +320,6 @@ async def run_book_generation(
         logger.info("Job %s: %d lines, %d characters, book %s", job_id, total, len(characters), book_id)
 
         # ── Step 2: voice assignment (book-level, runs once) ─────────────
-        # assignment_map: {character_name: voice_id}
-        # Settled here against the full characters list — never touched again.
         await update_job(job_id, {
             "pipeline_stage": "voice_assignment",
             "progress": 10,
@@ -213,96 +327,110 @@ async def run_book_generation(
         })
 
         assignment_map: Dict[str, str] = await _assign_voices(characters)
+        unique_voice_ids = set(assignment_map.values())
 
         await update_job(job_id, {
             "assignment_map": json.dumps(assignment_map),
             "total_chunks": total,
+            "voice_ids": json.dumps(list(unique_voice_ids)),
             "message": f"Voices assigned to {len(assignment_map)} characters",
         })
-        
-        unique_voice_ids = set(assignment_map.values())
 
         # ── Step 3: build voice_cache — download each unique WAV once ────
-        # voice_cache: {voice_id: bytes}
         await update_job(job_id, {
             "pipeline_stage": "downloading_voices",
             "progress": 15,
             "message": f"Downloading {len(unique_voice_ids)} unique voice sample(s)",
-            "voice_ids": json.dumps(list(unique_voice_ids))
         })
 
         voice_cache: Dict[str, bytes] = {}
-
         for voice_id in unique_voice_ids:
             voice_cache[voice_id] = await _r2_download(session, f"voice_library/{voice_id}.wav")
             logger.info("Job %s: cached voice_id=%s (%d bytes)", job_id, voice_id, len(voice_cache[voice_id]))
 
-        # ── Step 4: TTS loop ─────────────────────────────────────────────
-        completed_chunks = 0
-        failed_chunks = 0
-        chunk_r2_keys: List[Optional[str]] = []
+        # ── Step 3.5: warm up TTS model before loop ──────────────────────
+        # Blocks here until HF endpoint is running and client is initialized.
+        # Prevents all concurrent chunk tasks from racing on initialization.
+        await update_job(job_id, {
+            "pipeline_stage": "warming_up_model",
+            "progress": 18,
+            "message": "Warming up TTS model — may take a minute if scaled to zero",
+        })
 
-        # Fallback voice_id in case a speaker name isn't in assignment_map.
-        # Shouldn't happen if the LLM chunker and voice assignment are consistent,
-        # but guards against edge cases like "Chapter" markers.
+        await _warmup_tts()
+
+        # ── Step 4: concurrent TTS loop ──────────────────────────────────
+        # Pre-allocated by index — each task writes only its own slot.
+        succeeded: List[Optional[str]] = [None] * total   # R2 keys
+        failed: List[Optional[int]] = [None] * total      # chunk indices
+        skipped: List[Optional[int]] = [None] * total     # chunk indices
+        counter: Dict[str, int] = {"completed": 0, "failed": 0, "skipped": 0}
+        semaphore = asyncio.Semaphore(TTS_CONCURRENCY)
+        stop_event = asyncio.Event()
         fallback_voice_id = next(iter(assignment_map.values()))
 
-        for idx, line in enumerate(lines):
-            text = line.get("text", "").strip()
-            speaker = line.get("speaker", "")
+        chunk_tasks = [
+            _process_chunk(
+                idx=idx,
+                line=line,
+                session=session,
+                voice_cache=voice_cache,
+                assignment_map=assignment_map,
+                fallback_voice_id=fallback_voice_id,
+                book_id=book_id,
+                job_id=job_id,
+                semaphore=semaphore,
+                succeeded=succeeded,
+                failed=failed,
+                skipped=skipped,
+                counter=counter,
+            )
+            for idx, line in enumerate(lines)
+        ]
 
-            if not text:
-                logger.debug("Job %s: skipping empty line %d", job_id, idx)
-                chunk_r2_keys.append(None)
-                continue
+        # Reporter runs independently — not inside gather so it doesn't block completion
+        reporter = asyncio.create_task(
+            _report_progress(job_id, counter, total, stop_event)
+        )
 
-            voice_id = assignment_map.get(speaker, fallback_voice_id)
-            voice_bytes = voice_cache[voice_id]
-            emotion = line.get("emotion", DEFAULT_EMOTION)
-            emotion_strength = float(line.get("emotion_strength", DEFAULT_EMOTION_STRENGTH))
+        await asyncio.gather(*chunk_tasks)
+        stop_event.set()
+        await reporter
 
-            try:
-                audio_bytes = await _call_tts(voice_bytes, text, emotion, emotion_strength)
-                chunk_key = f"audiobook_chunks/{book_id}/{idx}.wav"
-                await _r2_upload(session, chunk_key, audio_bytes)
-                chunk_r2_keys.append(chunk_key)
-                completed_chunks += 1
+        # ── Step 5: guard — all chunks failed means job failed ───────────
+        if counter["completed"] == 0:
+            raise ValueError(f"All {total} chunks failed — no audio generated")
 
-            except Exception as e:
-                logger.error("Job %s chunk %d (speaker=%s) failed: %s", job_id, idx, speaker, e)
-                chunk_r2_keys.append(None)
-                failed_chunks += 1
-
-            # Progress: 15% → 95% across the TTS loop
-            progress = 15 + int((idx + 1) / total * 80)
-            await update_job(job_id, {
-                "pipeline_stage": "tts_generation",
-                "progress": progress,
-                "chunks_completed": completed_chunks,
-                "chunks_failed": failed_chunks,
-                "message": f"Generating audio: {idx + 1}/{total} chunks",
-            })
-
-        # ── Step 5: complete ─────────────────────────────────────────────
+        # ── Step 6: complete ─────────────────────────────────────────────
         result = {
             "book_id": book_id,
             "total_chunks": total,
-            "chunks_completed": completed_chunks,
-            "chunks_failed": failed_chunks,
-            "chunk_r2_keys": [k for k in chunk_r2_keys if k],
+            "chunks": {
+                "succeeded": [k for k in succeeded if k is not None],
+                "failed": [i for i in failed if i is not None],
+                "skipped": [i for i in skipped if i is not None],
+            },
             "assignment_map": assignment_map,
+            "voice_ids": list(unique_voice_ids),
         }
 
         await update_job(job_id, {
             "status": "completed",
             "pipeline_stage": "completed",
             "progress": 100,
-            "message": f"Audio generation complete: {completed_chunks}/{total} chunks",
+            # Final authoritative counts — written atomically here, not from reporter
+            "chunks_completed": counter["completed"],
+            "chunks_failed": counter["failed"],
+            "chunks_skipped": counter["skipped"],
+            "message": f"Audio generation complete: {counter['completed']}/{total} chunks",
             "completed_at": datetime.utcnow().isoformat(),
             "result": json.dumps(result),
         })
 
-        logger.info("Job %s complete — %d/%d chunks OK, %d failed", job_id, completed_chunks, total, failed_chunks)
+        logger.info(
+            "Job %s complete — %d/%d chunks OK, %d failed, %d skipped",
+            job_id, counter["completed"], total, counter["failed"], counter["skipped"],
+        )
 
     except Exception as e:
         logger.error("Job %s fatal error: %s", job_id, e, exc_info=True)

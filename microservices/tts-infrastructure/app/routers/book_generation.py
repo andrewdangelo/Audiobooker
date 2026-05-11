@@ -2,28 +2,28 @@
 Book Generation Router
 ======================
 Receives the trigger from pdf-processor once a script JSON is ready,
-kicks off an async generation job, and exposes a status endpoint so
-anything (frontend, pdf-processor, backend) can poll progress.
+enqueues an ARQ job, and exposes a status endpoint so anything
+(frontend, pdf-processor, backend) can poll progress.
 
 Endpoints:
-    POST /start          — trigger generation, returns job_id (202)
+    POST /start          — enqueue generation job, returns job_id (202)
     GET  /job/{job_id}   — poll job status
     GET  /jobs           — list all jobs (debug)
 """
 
+import json
 import uuid
 import logging
 from datetime import datetime
+from typing import Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
-from typing import Optional, List
 
 from app.core.config_settings import settings
 from app.services.book_generation_service import (
     create_job,
     get_job,
-    run_book_generation,
     JOB_PREFIX,
 )
 from app.core.redis_manager import redis_manager
@@ -36,7 +36,7 @@ router = APIRouter()
 # Security
 # ---------------------------------------------------------------------------
 
-def _require_internal_key(x_internal_service_key: Optional[str] = Header(None)) -> None:
+def _require_internal_key(x_internal_service_key: Optional[str]) -> None:
     if x_internal_service_key != settings.INTERNAL_SERVICE_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: invalid internal service key")
 
@@ -57,19 +57,82 @@ class StartGenerationResponse(BaseModel):
     message: str
 
 
+class ChunkResult(BaseModel):
+    succeeded: List[str]        # R2 keys of successfully generated chunks
+    failed: List[int]           # indices of chunks that errored during TTS
+    skipped: List[int]          # indices of chunks with empty text (no audio needed)
+
+
+class GenerationResult(BaseModel):
+    book_id: str
+    total_chunks: int
+    chunks: ChunkResult
+    assignment_map: Dict[str, str]
+    voice_ids: List[str]
+
+
 class JobStatusResponse(BaseModel):
     job_id: str
-    status: str
-    progress: int
-    pipeline_stage: Optional[str] = None
+    status: str                          # pending | processing | completed | failed
+    progress: int                        # 0-100 — use this for the progress bar
+    pipeline_stage: Optional[str] = None # human-readable current stage
     message: str
-    total_chunks: Optional[int] = None
+    # Live counters — updated every 2s during tts_generation stage
+    # These are for real-time polling display only.
+    # On completion, read authoritative values from result.chunks instead.
     chunks_completed: Optional[int] = None
     chunks_failed: Optional[int] = None
-    voice_ids: Optional[List[str]] = None   # was: voice_id: Optional[str]
+    chunks_skipped: Optional[int] = None
+    voice_ids: Optional[List[str]] = None
     error: Optional[str] = None
     completed_at: Optional[str] = None
-    result: Optional[dict] = None
+    result: Optional[GenerationResult] = None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _int_or_none(v) -> Optional[int]:
+    """
+    Returns int if value exists and is parseable, None if genuinely absent.
+    Does NOT coerce 0 to None — 0 is a valid meaningful value.
+    """
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_json_field(v):
+    """Parse a Redis field that was stored as a JSON string."""
+    if v is None:
+        return None
+    if isinstance(v, (dict, list)):
+        return v
+    try:
+        return json.loads(v)
+    except Exception:
+        return None
+
+
+def _parse_result(v) -> Optional[GenerationResult]:
+    """Parse the result field into a typed GenerationResult."""
+    raw = _parse_json_field(v)
+    if not raw:
+        return None
+    try:
+        return GenerationResult(
+            book_id=raw["book_id"],
+            total_chunks=raw["total_chunks"],
+            chunks=ChunkResult(**raw["chunks"]),
+            assignment_map=raw["assignment_map"],
+            voice_ids=raw["voice_ids"],
+        )
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -79,11 +142,11 @@ class JobStatusResponse(BaseModel):
 @router.post("/start", response_model=StartGenerationResponse, status_code=202)
 async def start_generation(
     request: StartGenerationRequest,
-    background_tasks: BackgroundTasks,
+    req: Request,
     x_internal_service_key: Optional[str] = Header(None),
 ):
     """
-    Trigger async audio generation for a book.
+    Enqueue an audio generation job for a book.
     Called by pdf-processor after the script JSON is ready in R2.
     Returns 202 immediately with a job_id to poll.
     """
@@ -99,19 +162,20 @@ async def start_generation(
         "status": "pending",
         "pipeline_stage": "pending",
         "progress": 0,
-        "message": "Job queued",
+        "message": "Job queued — waiting for worker",
         "created_at": datetime.utcnow().isoformat(),
     })
 
-    background_tasks.add_task(
-        run_book_generation,
+    arq_pool = req.app.state.arq_pool
+    await arq_pool.enqueue_job(
+        "run_book_generation",
         job_id=job_id,
         book_id=request.book_id,
         script_r2_key=request.script_r2_key,
         user_id=request.user_id,
     )
 
-    logger.info("Book generation job %s queued for book %s", job_id, request.book_id)
+    logger.info("Book generation job %s enqueued for book %s", job_id, request.book_id)
 
     return StartGenerationResponse(
         job_id=job_id,
@@ -127,34 +191,16 @@ async def get_job_status(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-    import json
-
-    def _int(v, default=0):
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return default
-
-    def _parse_result(v):
-        if isinstance(v, dict):
-            return v
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except Exception:
-                return None
-        return None
-
     return JobStatusResponse(
         job_id=str(job.get("job_id", job_id)),
         status=str(job.get("status", "unknown")),
-        progress=max(0, min(100, _int(job.get("progress", 0)))),
+        progress=max(0, min(100, _int_or_none(job.get("progress")) or 0)),
         pipeline_stage=job.get("pipeline_stage"),
         message=str(job.get("message", "")),
-        total_chunks=_int(job.get("total_chunks")) or None,
-        chunks_completed=_int(job.get("chunks_completed")) or None,
-        chunks_failed=_int(job.get("chunks_failed")) or None,
-        voice_ids=_parse_result(job.get("voice_ids")),
+        chunks_completed=_int_or_none(job.get("chunks_completed")),
+        chunks_failed=_int_or_none(job.get("chunks_failed")),
+        chunks_skipped=_int_or_none(job.get("chunks_skipped")),
+        voice_ids=_parse_json_field(job.get("voice_ids")),
         error=job.get("error"),
         completed_at=job.get("completed_at"),
         result=_parse_result(job.get("result")),
