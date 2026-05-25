@@ -86,6 +86,7 @@ async def process_pdf(user_id: str = Query(..., description="User ID"), request:
         credit_type = meta.get("credit_type") if isinstance(meta.get("credit_type"), str) else "basic"
         if credit_type not in ("basic", "premium"):
             credit_type = "basic"
+        voice_id = meta.get("voice_id") if isinstance(meta.get("voice_id"), str) else None
 
         await pdf_processor.create_job(
             job_id,
@@ -110,6 +111,7 @@ async def process_pdf(user_id: str = Query(..., description="User ID"), request:
             chunk_overlap=request.chunk_overlap,
             output_format=request.output_format,
             credit_type=credit_type,
+            voice_id=voice_id,
         )
         
         logger.info(f"Job {job_id} queued for processing")

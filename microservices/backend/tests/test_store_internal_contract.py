@@ -135,3 +135,92 @@ def test_internal_library_create_and_idempotent(books_db):
     assert r2.status_code == 201
     assert r2.json()["created"] is False
     assert r2.json()["entry"]["book_id"] == "book-store-1"
+
+
+def test_internal_patch_book_audio_failed_without_url(books_db):
+    """pdf-processor sends narration_status=failed with no audio_url; must not return 422."""
+    from main import app
+
+    db = db_module.get_database()
+    db[Collections.BOOKS].insert_one(
+        {
+            "_id": "conv-book-1",
+            "id": "conv-book-1",
+            "title": "Converted",
+            "author": "Author",
+            "duration": 0,
+            "audio_url": None,
+            "chapters": [],
+        }
+    )
+
+    with TestClient(app) as client:
+        r = client.patch(
+            "/api/v1/internal/books/conv-book-1/audio",
+            headers={"X-Internal-Service-Key": "test-internal-key"},
+            json={"narration_status": "failed"},
+        )
+
+    assert r.status_code == 200
+    doc = db[Collections.BOOKS].find_one({"id": "conv-book-1"})
+    assert doc.get("narration_status") == "failed"
+    assert doc.get("audio_url") is None
+
+
+def test_internal_patch_book_audio_ready_requires_url(books_db):
+    from main import app
+
+    db = db_module.get_database()
+    db[Collections.BOOKS].insert_one(
+        {
+            "_id": "conv-book-2",
+            "id": "conv-book-2",
+            "title": "Converted",
+            "author": "Author",
+            "duration": 0,
+            "audio_url": None,
+            "chapters": [],
+        }
+    )
+
+    with TestClient(app) as client:
+        r = client.patch(
+            "/api/v1/internal/books/conv-book-2/audio",
+            headers={"X-Internal-Service-Key": "test-internal-key"},
+            json={"narration_status": "ready"},
+        )
+
+    assert r.status_code == 422
+
+
+def test_internal_patch_book_audio_ready_ok(books_db):
+    from main import app
+
+    db = db_module.get_database()
+    db[Collections.BOOKS].insert_one(
+        {
+            "_id": "conv-book-3",
+            "id": "conv-book-3",
+            "title": "Converted",
+            "author": "Author",
+            "duration": 0,
+            "audio_url": None,
+            "chapters": [],
+        }
+    )
+
+    with TestClient(app) as client:
+        r = client.patch(
+            "/api/v1/internal/books/conv-book-3/audio",
+            headers={"X-Internal-Service-Key": "test-internal-key"},
+            json={
+                "narration_status": "ready",
+                "audio_url": "https://example.com/a.mp3",
+                "duration": 123.5,
+            },
+        )
+
+    assert r.status_code == 200
+    doc = db[Collections.BOOKS].find_one({"id": "conv-book-3"})
+    assert doc.get("audio_url") == "https://example.com/a.mp3"
+    assert doc.get("narration_status") == "ready"

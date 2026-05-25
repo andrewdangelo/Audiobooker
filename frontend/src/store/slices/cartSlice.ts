@@ -22,6 +22,7 @@ import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import { paymentService } from '@/services/paymentService'
 import { cartApiService, storeService } from '@/services/backendService'
+import api from '@/services/api'
 
 // ============================================================================
 // TYPES
@@ -58,6 +59,8 @@ export interface CartState {
   error: string | null
   // Last sync timestamp
   lastSyncedAt: string | null
+  /** Set after checkout succeeds if some library fulfillments failed (credits or card). */
+  lastFulfillmentWarning: { failedBookIds: string[] } | null
 }
 
 // ============================================================================
@@ -72,6 +75,7 @@ const initialState: CartState = {
   isCheckingOut: false,
   error: null,
   lastSyncedAt: null,
+  lastFulfillmentWarning: null,
 }
 
 // ============================================================================
@@ -155,7 +159,13 @@ export const checkout = createAsyncThunk(
     }: {
       paymentMethod: 'credits' | 'card'
       paymentId?: string | null
-      itemsOverride?: Array<{ bookId: string; quantity: number; priceAtAdd: number; creditsAtAdd: number }>
+      itemsOverride?: Array<{
+        bookId: string
+        quantity: number
+        priceAtAdd: number
+        creditsAtAdd: number
+        edition?: 'basic' | 'premium'
+      }>
       clearCartOnSuccess?: boolean
     },
     { getState, rejectWithValue }
@@ -170,32 +180,74 @@ export const checkout = createAsyncThunk(
         throw new Error('User not authenticated')
       }
 
-      const paymentItems = effectiveItems.map((item) => ({
-        book_id: item.bookId,
-        quantity: item.quantity,
-        price_cents: item.priceAtAdd,
-        credits: item.creditsAtAdd,
-        title: state.store.books[item.bookId]?.title || `Book ${item.bookId}`,
-      }))
+      const lines = effectiveItems as CartItem[]
+      const totalUnits = lines.reduce((sum, item) => sum + item.quantity, 0)
 
       if (paymentMethod === 'credits') {
-        // Process credits payment via payment service
-        const response = await paymentService.payWithCredits({
-          user_id: userId,
-          items: paymentItems,
-          currency: 'usd',
-          metadata: {
-            item_count: String(effectiveItems.length),
-            book_ids: effectiveItems.map((item) => item.bookId).join(','),
-          },
-        })
+        const basicLines = lines.filter((i) => i.edition !== 'premium')
+
+        let payResponse: Awaited<ReturnType<typeof paymentService.payWithCredits>> | null = null
+        if (basicLines.length > 0) {
+          const basicPaymentItems = basicLines.map((item) => ({
+            book_id: item.bookId,
+            quantity: item.quantity,
+            price_cents: item.priceAtAdd,
+            credits: item.creditsAtAdd,
+            title: state.store.books[item.bookId]?.title || `Book ${item.bookId}`,
+          }))
+          payResponse = await paymentService.payWithCredits({
+            user_id: userId,
+            items: basicPaymentItems,
+            currency: 'usd',
+            metadata: {
+              item_count: String(basicLines.length),
+              book_ids: basicLines.map((item) => item.bookId).join(','),
+            },
+          })
+        }
+
+        const failedFulfillments: string[] = []
+        let premiumCreditsDeducted = 0
+
+        for (const item of lines) {
+          const edition = item.edition
+          for (let q = 0; q < item.quantity; q++) {
+            try {
+              if (edition === 'premium') {
+                const { data } = await api.post<{ credits_used?: number }>(
+                  '/backend/store/premium-purchase',
+                  {
+                    book_id: item.bookId,
+                    payment_method: 'premium_credits',
+                  },
+                  { params: { user_id: userId } },
+                )
+                premiumCreditsDeducted += Number(data?.credits_used ?? 0)
+              } else {
+                await storeService.purchase(userId, item.bookId, 'credits')
+              }
+            } catch {
+              failedFulfillments.push(item.bookId)
+            }
+          }
+        }
+
+        if (totalUnits > 0 && failedFulfillments.length >= totalUnits) {
+          throw new Error(
+            'Payment succeeded but library fulfillment failed for all items. Please contact support.',
+          )
+        }
+
+        const failedUnique = [...new Set(failedFulfillments)]
 
         return {
           success: true,
-          orderId: response.order_id,
-          purchasedBooks: effectiveItems.map((item) => item.bookId),
-          remainingCredits: response.remaining_credits,
+          orderId: payResponse?.order_id ?? 'checkout-credits',
+          purchasedBooks: lines.map((item) => item.bookId),
+          remainingCredits: payResponse?.remaining_credits ?? state.store.userCredits,
+          premiumCreditsDeducted,
           clearCartOnSuccess,
+          failedFulfillments: failedUnique.length > 0 ? failedUnique : undefined,
         }
       } else {
         // Card payment - the payment intent was already confirmed via Stripe Elements.
@@ -208,22 +260,47 @@ export const checkout = createAsyncThunk(
           throw new Error('Missing payment record')
         }
 
-        // Explicitly fulfill ownership for every purchased item (idempotent backend endpoint).
-        // The webhook is a secondary safety net; this guarantees ownership is visible immediately.
-        for (const item of effectiveItems) {
-          try {
-            await storeService.purchase(userId, item.bookId, 'card')
-          } catch {
-            // Best-effort: a backend webhook will catch any gap
+        const failedFulfillments: string[] = []
+
+        for (const item of lines) {
+          for (let q = 0; q < item.quantity; q++) {
+            try {
+              const edition = item.edition
+              if (edition === 'premium') {
+                await api.post(
+                  '/backend/store/premium-purchase',
+                  {
+                    book_id: item.bookId,
+                    payment_method: 'card',
+                    payment_intent_id: paymentId,
+                  },
+                  { params: { user_id: userId } },
+                )
+              } else {
+                await storeService.purchase(userId, item.bookId, 'card')
+              }
+            } catch {
+              failedFulfillments.push(item.bookId)
+            }
           }
         }
+
+        if (totalUnits > 0 && failedFulfillments.length >= totalUnits) {
+          throw new Error(
+            'Payment was processed but we could not add the books to your library. Please contact support.',
+          )
+        }
+
+        const failedUnique = [...new Set(failedFulfillments)]
 
         return {
           success: true,
           orderId: paymentId,
-          purchasedBooks: effectiveItems.map((item) => item.bookId),
+          purchasedBooks: lines.map((item) => item.bookId),
           remainingCredits: state.store.userCredits,
+          premiumCreditsDeducted: 0,
           clearCartOnSuccess,
+          failedFulfillments: failedUnique.length > 0 ? failedUnique : undefined,
         }
       }
     } catch (error) {
@@ -338,6 +415,7 @@ const cartSlice = createSlice({
       state.checkoutStep = 'cart'
       state.isCheckingOut = false
       state.error = null
+      state.lastFulfillmentWarning = null
     },
     
     /**
@@ -379,10 +457,14 @@ const cartSlice = createSlice({
       .addCase(checkout.pending, (state) => {
         state.isCheckingOut = true
         state.error = null
+        state.lastFulfillmentWarning = null
       })
       .addCase(checkout.fulfilled, (state, action) => {
         state.isCheckingOut = false
         state.checkoutStep = 'success'
+        const failed = action.payload.failedFulfillments
+        state.lastFulfillmentWarning =
+          failed && failed.length > 0 ? { failedBookIds: failed } : null
         // Only clear the cart for normal cart-based checkouts;
         // direct single-book purchases leave the cart intact.
         if (action.payload.clearCartOnSuccess !== false) {
@@ -476,6 +558,10 @@ export const selectIsCheckingOut = (state: RootState): boolean => state.cart.isC
  * Select cart error
  */
 export const selectCartError = (state: RootState): string | null => state.cart.error
+
+/** Partial fulfillment after checkout (some books failed to attach to library). */
+export const selectLastFulfillmentWarning = (state: RootState) =>
+  state.cart.lastFulfillmentWarning
 
 /**
  * Select if cart is empty

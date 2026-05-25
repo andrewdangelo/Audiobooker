@@ -206,3 +206,18 @@ class ConsumeConversionCreditRequest(BaseModel):
         if v not in ("basic", "premium"):
             raise ValueError("credit_type must be basic or premium")
         return v
+
+
+class RefundConversionCreditRequest(BaseModel):
+    """Refund one basic or premium credit after a conversion failure (service-to-service)."""
+
+    user_id: str = Field(..., description="User whose credit should be refunded")
+    credit_type: str = Field(..., description="basic or premium")
+    reason: Optional[str] = Field(None, description="Why the refund was issued")
+
+    @field_validator("credit_type")
+    @classmethod
+    def validate_credit_type(cls, v: str) -> str:
+        if v not in ("basic", "premium"):
+            raise ValueError("credit_type must be basic or premium")
+        return v

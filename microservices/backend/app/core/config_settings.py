@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = Field(default="HS256", description="JWT algorithm")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, description="Access token expiry in minutes")
 
+    # TTS / Narration defaults
+    DEFAULT_BASIC_VOICE_ID: str = Field(default="alloy", description="Default voice ID for basic TTS narration")
+
+    # Stripe (for server-side PaymentIntent verification on card purchases)
+    STRIPE_SECRET_KEY: Optional[str] = Field(default=None, description="Stripe secret key for server-side PI verification")
+
     # File Upload
     MAX_FILE_SIZE_MB: int = Field(default=100, description="Max upload file size in MB")
     

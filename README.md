@@ -1,125 +1,119 @@
-# Audiobooker - PDF to Audiobook Conversion System
+# Audiobooker
 
-A modern web application that converts PDF documents into high-quality audiobooks using AI-powered text-to-speech technology.
+A modern web application that converts PDF and EPUB documents into audiobooks
+using AI-powered text-to-speech. Upload a book, choose a voice, and get a
+narrated MP3 in your library.
 
-## 🚀 Features
+## Architecture
 
-- **PDF Upload & Processing**: Extract text from PDF documents
-- **Text-to-Speech Conversion**: Convert extracted text to natural-sounding audio
-- **Cloud Storage**: Store audiobooks securely on Cloudflare R2
-- **User Library**: Manage and organize your audiobook collection
-- **Audio Player**: Built-in player with playback controls
-- **Progress Tracking**: Monitor conversion progress in real-time
-
-## 🏗️ Tech Stack
-
-### Frontend
-- **React** with TypeScript
-- **Vite** for fast development and building
-- **Tailwind CSS** for styling
-- **shadcn/ui** for UI components
-- **React Router** for navigation
-
-### Backend
-- **Python FastAPI** for high-performance API
-- **PostgreSQL** for data persistence
-- **Cloudflare R2** for object storage
-- **SQLAlchemy** for ORM
-- **Pydantic** for data validation
-
-## 📁 Project Structure
+Audiobooker is a microservices system fronted by a single API proxy.
 
 ```
-audiobooker/
-├── frontend/          # React frontend application
-├── backend/           # FastAPI backend application
-├── scripts/           # Utility scripts
-└── docker-compose.yml # Docker setup for local development
+frontend (React/Vite)
+     │
+     ▼
+api-proxy :8000  ── rate-limits, queues, forwards ──┐
+     │                                               │
+     ├── auth-service      :8001  (JWT, credits)     │
+     ├── backend           :8002  (library, books)   │
+     ├── tts-infrastructure:8003  (ElevenLabs/OpenAI)│
+     ├── pdf-processor     :8004  (extract + narrate)│
+     └── payment-service   :8005  (Stripe, credits)  │
+                                                     │
+     MongoDB 27017  ◄────────────────────────────────┘
+     Redis   6379
+     Postgres 5433 (legacy, not actively used)
 ```
 
-## 🛠️ Getting Started
+### Tech stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, Redux Toolkit |
+| Backend services | Python 3.11+, FastAPI, Pydantic v2 |
+| Databases | MongoDB 7 (primary), Redis 7 (queues/cache), PostgreSQL 15 (legacy) |
+| Object storage | Cloudflare R2 |
+| Payments | Stripe (PaymentIntents, checkout sessions, webhooks) |
+| TTS providers | ElevenLabs, OpenAI TTS |
+
+## Quick start
 
 ### Prerequisites
 
-- Node.js 18+ and npm/yarn
+- Node.js 18+ and npm
 - Python 3.11+
 - Docker and Docker Compose
-- PostgreSQL (or use Docker)
 
-### Installation
+### 1. Start infrastructure
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd audiobooker
-   ```
-
-2. **Set up environment variables**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
-
-3. **Start the database**
-   ```bash
-   docker-compose up -d postgres
-   ```
-
-4. **Set up the backend**
-   ```bash
-   cd backend
-   cp .env.example .env
-   # Edit backend/.env with your configuration
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   python main.py
-   ```
-
-5. **Set up the frontend**
-   ```bash
-   cd frontend
-   cp .env.example .env
-   # Edit frontend/.env with your configuration
-   npm install
-   npm run dev
-   ```
-
-6. **Access the application**
-   - Frontend: http://localhost:5173
-   - Backend API: http://localhost:8000
-   - API Documentation: http://localhost:8000/docs
-
-## 🧪 Testing
-
-### Backend Tests
 ```bash
-cd backend
-pytest
+docker compose up -d          # MongoDB, Redis, Postgres
 ```
 
-### Frontend Tests
+### 2. Start the full API stack (optional)
+
+```bash
+docker compose --profile fullstack up --build
+```
+
+Or run services individually — each microservice has its own `.env` file and
+`requirements.txt` under `microservices/<name>/`.
+
+### 3. Start the frontend
+
 ```bash
 cd frontend
-npm run test
+npm install
+npm run dev        # http://localhost:5173
 ```
 
-## 📝 Documentation
+### Environment variables
 
-- [Frontend Documentation](./frontend/README.md)
-- [Backend Documentation](./backend/README.md)
-- [API Documentation](http://localhost:8000/docs) (when running)
+Each microservice reads from a `.env` at its own root. Key variables:
 
-## 🤝 Contributing
+| Variable | Service | Purpose |
+|----------|---------|---------|
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | pdf-processor | Cloudflare R2 credentials |
+| `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` | payment-service, backend | Stripe keys |
+| `ELEVENLABS_API_KEY` | tts-infrastructure | ElevenLabs API key |
+| `INTERNAL_SERVICE_KEY` | all services | Shared secret for service-to-service calls |
+| `DEFAULT_BASIC_VOICE_ID` | pdf-processor, backend | Default ElevenLabs voice for basic narration |
 
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
+## Project structure
 
-## 📄 License
+```
+audiobooker/
+├── frontend/                    # React SPA
+├── api_proxy/                   # FastAPI proxy + Redis queue workers
+├── microservices/
+│   ├── auth-service/            # Signup, login, JWT, credits
+│   ├── backend/                 # Library, books, playback, internal APIs
+│   ├── payment-service/         # Stripe integration, credit packs
+│   ├── pdf-processor/           # PDF/EPUB extraction + TTS narration
+│   └── tts-infrastructure/      # TTS generation + audio stitching
+├── docs/                        # Architecture docs, ADRs, assessment
+├── docker-compose.yml
+└── README.md
+```
 
-This project is licensed under the MIT License.
+## Key user flows
 
-## 🔗 Links
+1. **Sign up / login** — auth-service issues JWT access + refresh tokens.
+2. **Buy credits** — payment-service creates a Stripe PaymentIntent; credits
+   are granted on confirmation.
+3. **Upload a PDF/EPUB** — frontend consumes one credit, uploads to
+   pdf-processor, which extracts text, calls TTS `/batch`, uploads audio to R2,
+   and patches the backend book record.
+4. **Listen** — backend serves the R2 audio URL; the frontend player streams it.
+5. **Store purchase** — single-book or cart checkout via credits or card.
 
-- [Project Repository](#)
-- [Issue Tracker](#)
-- [Documentation](#)
+## Documentation
+
+- [Architecture overview](./docs/)
+- [ADR-001: TTS orchestrator](./docs/adr/001-tts-narration-orchestrator.md)
+- [Beta assessment report](./docs/BETA_SINGLE_VOICE_ASSESSMENT_REPORT.md)
+- [API reference](./docs/07-api-reference.md) (being updated)
+
+## License
+
+MIT

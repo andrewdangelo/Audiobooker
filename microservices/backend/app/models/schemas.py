@@ -186,14 +186,15 @@ class BookDetailed(BaseModel):
     last_played_at: Optional[str] = None
     is_premium: bool = False
     purchase_type: str = "basic"  # "basic" or "premium"
-    
+    narration_status: Optional[str] = None  # "ready", "pending_audio", "failed", or None
+
     class Config:
         from_attributes = True
 
 
 class BookListResponse(BaseModel):
     """Paginated book list response"""
-    
+
     books: List[BookBasic]
     total: int
     page: int

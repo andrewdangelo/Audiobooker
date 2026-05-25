@@ -35,7 +35,12 @@ function normalizeBook(raw: Record<string, unknown>): Audiobook {
     description: raw.description as string | undefined,
     coverImage: (raw.cover_image_url ?? raw.coverImage) as string | undefined,
     duration: Number(raw.duration ?? 0),
-    audioUrl: (raw.audio_url ?? raw.audioUrl ?? '') as string,
+    audioUrl: (raw.audio_url ?? raw.audioUrl ?? null) as string | null,
+    narrationStatus: (raw.narration_status ?? raw.narrationStatus) as
+      | 'ready'
+      | 'pending_audio'
+      | 'failed'
+      | undefined,
     narrator: raw.narrator as string | undefined,
     publishedYear: (raw.published_year ?? raw.publishedYear) as number | undefined,
     genre: raw.genre as string | undefined,

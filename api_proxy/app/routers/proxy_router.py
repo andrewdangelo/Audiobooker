@@ -1,6 +1,7 @@
 """
 Proxy router - All API endpoints
 """
+import base64
 import json
 import logging
 import httpx
@@ -49,7 +50,6 @@ async def forward_or_queue(service_name: str, request: Request, path: str):
             request_data["content_type"] = content_type
             
             if "multipart/form-data" in content_type:
-                # Store file uploads
                 form = await request.form()
                 files_data = {}
                 for key, value in form.items():
@@ -57,7 +57,7 @@ async def forward_or_queue(service_name: str, request: Request, path: str):
                         content = await value.read()
                         files_data[key] = {
                             "filename": value.filename,
-                            "content": content.decode('latin1'),
+                            "content_b64": base64.b64encode(content).decode("ascii"),
                             "content_type": value.content_type
                         }
                 request_data["files_data"] = json.dumps(files_data)

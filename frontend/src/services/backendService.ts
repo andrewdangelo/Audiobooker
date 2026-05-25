@@ -137,9 +137,10 @@ export interface ChapterInfo {
 // --- Playback ---
 
 export interface AudioUrlResponse {
-  audio_url: string
+  audioUrl: string | null
   format: string
-  duration: number
+  duration: number | null
+  status: 'ready' | 'pending_audio' | 'narration_failed'
 }
 
 export interface ProgressResponse {

@@ -9,6 +9,7 @@ from datetime import datetime
 import logging
 import uuid
 
+from app.core.config_settings import settings
 from app.database.database import get_db
 from app.database.db_engine import MongoDBService
 from app.models.db_models import Collections
@@ -16,6 +17,38 @@ from app.models.schemas import PremiumPurchaseRequest, PremiumPurchaseResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _verify_stripe_payment_intent(payment_intent_id: str, expected_amount_cents: int) -> bool:
+    """
+    Server-side check that a Stripe PaymentIntent is truly succeeded and
+    matches the expected amount.  Returns True if valid, raises HTTPException
+    if not.  When STRIPE_SECRET_KEY is unset (development), verification is
+    skipped with a warning.
+    """
+    if not settings.STRIPE_SECRET_KEY:
+        logger.warning("STRIPE_SECRET_KEY not configured — skipping PI verification")
+        return True
+
+    try:
+        import stripe
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+    except Exception as e:
+        logger.error("Stripe PI retrieval failed: %s", e)
+        raise HTTPException(status_code=502, detail="Unable to verify payment with Stripe")
+
+    if pi.status != "succeeded":
+        raise HTTPException(status_code=402, detail=f"PaymentIntent status is '{pi.status}', expected 'succeeded'")
+
+    if pi.amount < expected_amount_cents:
+        logger.warning(
+            "PI amount mismatch: got %d, expected >= %d (pi=%s)",
+            pi.amount, expected_amount_cents, payment_intent_id,
+        )
+        raise HTTPException(status_code=400, detail="PaymentIntent amount does not match expected price")
+
+    return True
 
 
 # ============== Premium Purchase Pipeline ==============
@@ -94,14 +127,13 @@ async def purchase_premium_book(
         credits_used = premium_credits_required
 
     elif payment_method == "card":
-        # Card payment: a Stripe PaymentIntent must have been confirmed client-side.
-        # We trust the frontend/payment-service to have validated it; here we
-        # just record the charge amount for the activity log.
         if not purchase_data.payment_intent_id:
             raise HTTPException(
                 status_code=400,
                 detail="payment_intent_id is required for card purchases",
             )
+        expected_cents = int(premium_price * 100) if premium_price else 0
+        await _verify_stripe_payment_intent(purchase_data.payment_intent_id, expected_cents)
         amount_charged = premium_price
 
     else:

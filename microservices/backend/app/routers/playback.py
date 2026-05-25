@@ -36,10 +36,28 @@ async def get_audio_url(book_id: str, user_id: str = Query(..., description="Use
     if not library_item:
         raise HTTPException(status_code=403, detail="You don't own this book")
     
+    audio_url = book.get("audio_url")
+    if audio_url:
+        return {
+            "audioUrl": audio_url,
+            "format": "mp3",
+            "duration": book.get("duration"),
+            "status": "ready",
+        }
+
+    if book.get("narration_status") == "failed":
+        return {
+            "audioUrl": None,
+            "format": "mp3",
+            "duration": book.get("duration"),
+            "status": "narration_failed",
+        }
+
     return {
-        "audioUrl": book.get("audio_url") or f"https://cloudflare/{book_id}.mp3",
+        "audioUrl": None,
         "format": "mp3",
-        "duration": book.get("duration")
+        "duration": book.get("duration"),
+        "status": "pending_audio",
     }
 
 

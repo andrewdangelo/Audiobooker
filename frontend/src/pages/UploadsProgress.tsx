@@ -11,6 +11,7 @@ import {
   Circle,
   Clock,
   Loader2,
+  MinusCircle,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -38,6 +39,8 @@ function stageIcon(status: StageStatus) {
       return <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden />
     case 'in_progress':
       return <Loader2 className="h-4 w-4 animate-spin text-primary" aria-hidden />
+    case 'skipped':
+      return <MinusCircle className="h-4 w-4 text-muted-foreground" aria-hidden />
     case 'failed':
       return <AlertCircle className="h-4 w-4 text-destructive" aria-hidden />
     default:

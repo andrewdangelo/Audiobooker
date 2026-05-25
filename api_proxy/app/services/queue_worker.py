@@ -2,6 +2,7 @@
 Background queue workers
 """
 import asyncio
+import base64
 import httpx
 import json
 import logging
@@ -52,16 +53,14 @@ async def process_queued_request(service_name: str, queue_id: str, slot_id: str)
             
             elif method == "POST":
                 if request_data.get('files_data'):
-                    # Reconstruct file uploads
                     files_data = json.loads(request_data['files_data'])
-                    files = {
-                        k: (
-                            v['filename'], 
-                            v['content'].encode('latin1'), 
-                            v['content_type']
-                        ) 
-                        for k, v in files_data.items()
-                    }
+                    files = {}
+                    for k, v in files_data.items():
+                        if "content_b64" in v:
+                            raw = base64.b64decode(v["content_b64"])
+                        else:
+                            raw = v.get("content", "").encode("latin1")
+                        files[k] = (v["filename"], raw, v["content_type"])
                     response = await client.post(target_url, files=files)
                 else:
                     body = request_data.get('body', '').encode()

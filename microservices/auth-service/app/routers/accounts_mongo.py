@@ -11,6 +11,7 @@ from app.models.schemas import (
     UserResponse, UpdateAccountRequest, ChangePasswordRequest,
     UpdateAccountSettingsRequest, AccountSettingsResponse,
     ConsumeConversionCreditRequest,
+    RefundConversionCreditRequest,
 )
 from app.services.auth_service_mongo import AuthServiceMongo
 from app.database.mongodb import get_users_collection, get_account_settings_collection
@@ -242,6 +243,39 @@ async def consume_conversion_credit(
         "basic_credits": user.get("basic_credits", 0),
         "premium_credits": user.get("premium_credits", 0),
         "total_credits": user.get("basic_credits", 0) + user.get("premium_credits", 0),
+    }
+
+
+@router.post("/credits/refund-conversion")
+async def refund_conversion_credit(
+    request: RefundConversionCreditRequest,
+    x_internal_service_key: Optional[str] = Header(None),
+):
+    """
+    Refund one conversion credit after a pipeline failure.
+    Called service-to-service (pdf-processor) using the internal key.
+    """
+    from app.core.config_settings import settings as cfg
+    if not cfg.INTERNAL_SERVICE_KEY or x_internal_service_key != cfg.INTERNAL_SERVICE_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden: invalid internal service key")
+
+    users = get_users_collection()
+    oid = ObjectId(request.user_id)
+
+    field = "basic_credits" if request.credit_type == "basic" else "premium_credits"
+    result = await users.update_one(
+        {"_id": oid},
+        {"$inc": {field: 1}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user = await users.find_one({"_id": oid}, {"basic_credits": 1, "premium_credits": 1})
+    logger.info("Refunded 1 %s credit for user %s (reason: %s)", request.credit_type, request.user_id, request.reason)
+    return {
+        "user_id": request.user_id,
+        "basic_credits": user.get("basic_credits", 0),
+        "premium_credits": user.get("premium_credits", 0),
     }
 
 

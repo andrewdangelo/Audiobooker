@@ -23,7 +23,8 @@ export interface Audiobook {
   description?: string
   coverImage?: string
   duration: number
-  audioUrl: string
+  audioUrl?: string | null
+  narrationStatus?: 'ready' | 'pending_audio' | 'failed'
   narrator?: string
   publishedYear?: number
   genre?: string
@@ -536,5 +537,53 @@ export const selectProcessingBooks = (state: RootState): Audiobook[] =>
   selectConversionFlowBooks(state).filter(
     book => book.conversion?.stage === 'queued' || book.conversion?.stage === 'converting',
   )
+
+/** Prevents duplicate overlapping narration polls for the same book. */
+const activeNarrationPollBookIds = new Set<string>()
+
+/**
+ * Polls the book detail endpoint until narration audio is available.
+ * Stops when audioUrl is populated, narrationStatus is ready, failed, or max attempts reached.
+ */
+export const pollNarrationStatus = createAsyncThunk(
+  'audiobooks/pollNarrationStatus',
+  async (
+    { bookId, userId }: { bookId: string; userId: string },
+    { dispatch, rejectWithValue },
+  ) => {
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    const MAX_ATTEMPTS = 180
+    const POLL_INTERVAL_MS = 5000
+
+    try {
+      for (let i = 0; i < MAX_ATTEMPTS; i++) {
+        try {
+          const book = await audiobookService.getById(bookId, userId)
+          dispatch(addAudiobook(book))
+          if (book.narrationStatus === 'failed') {
+            return rejectWithValue('narration_failed')
+          }
+          if (book.audioUrl || book.narrationStatus === 'ready') {
+            return book
+          }
+        } catch {
+          /* transient errors — keep polling */
+        }
+        await delay(POLL_INTERVAL_MS)
+      }
+
+      return rejectWithValue('narration_poll_timed_out')
+    } finally {
+      activeNarrationPollBookIds.delete(bookId)
+    }
+  },
+  {
+    condition: (arg) => {
+      if (activeNarrationPollBookIds.has(arg.bookId)) return false
+      activeNarrationPollBookIds.add(arg.bookId)
+      return true
+    },
+  },
+)
 
 export default audiobooksSlice.reducer

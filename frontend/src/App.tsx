@@ -11,7 +11,8 @@ import StoreBookDetail from './pages/StoreBookDetail'
 import Cart from './pages/Cart'
 import Checkout from './pages/Checkout'
 import BookDetail from './pages/BookDetail'
-import AudiobookPreview from './pages/AudiobookPreview'
+// Preview page disabled until backend /previews and TTS preview APIs are implemented (B3/B4)
+// import AudiobookPreview from './pages/AudiobookPreview'
 import Pricing from './pages/Pricing'
 import Purchase from './pages/Purchase'
 import PurchaseSuccess from './pages/PurchaseSuccess'
@@ -75,7 +76,8 @@ function App() {
           <Route path="/uploads" element={<UploadsProgress />} />
           <Route path="/publish/:audiobookId" element={<PublishToStore />} />
           <Route path="/my-listings" element={<MyListings />} />
-          <Route path="/preview/:previewId" element={<AudiobookPreview />} />
+          {/* Preview route disabled until B3/B4 APIs exist */}
+          <Route path="/preview/:previewId" element={<Navigate to="/library" replace />} />
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/purchase" element={<Purchase />} />
           <Route path="/purchase/success" element={<PurchaseSuccess />} />

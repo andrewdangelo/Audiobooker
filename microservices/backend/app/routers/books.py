@@ -147,6 +147,7 @@ async def get_audiobook_details(book_id: str, user_id: str = Query(..., descript
         last_played_at=last_played_at,
         is_premium=book.get("is_premium", False),
         purchase_type=library_item.get("purchase_type", "basic") if library_item else "basic",
+        narration_status=book.get("narration_status"),
     )
 
 

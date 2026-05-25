@@ -85,6 +85,36 @@ class TextChunk(BaseModel):
     character_count: int = Field(..., description="Number of characters")
     start_char: int = Field(..., description="Starting character position in full text")
     end_char: int = Field(..., description="Ending character position in full text")
+    chapter_id: Optional[int] = Field(default=None, description="Parent chapter ID")
+    chapter_title: Optional[str] = Field(default=None, description="Parent chapter title")
+
+
+class ChapterSchema(BaseModel):
+    """Detected chapter structure"""
+    chapter_id: int = Field(..., description="Sequential chapter number")
+    title: str = Field(..., description="Chapter title")
+    start_page: Optional[int] = Field(default=None, description="Starting page number")
+    end_page: Optional[int] = Field(default=None, description="Ending page number")
+    detection_method: str = Field(default="none", description="How the chapter was detected: toc, font, regex, llm, epub, none")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Detection confidence")
+
+
+class ScriptSegment(BaseModel):
+    """A speaker-attributed text segment in the multivoice script"""
+    speaker: str = Field(..., description="Canonical speaker name")
+    text: str = Field(..., description="Segment text content")
+    chunk_id: Optional[int] = Field(default=None, description="Source chunk ID")
+    is_quote: bool = Field(default=False, description="Whether this is dialogue")
+
+
+class ScriptChapter(BaseModel):
+    """A chapter in the multivoice script with attributed segments"""
+    chapter_id: int = Field(..., description="Chapter number")
+    title: str = Field(..., description="Chapter title")
+    start_page: Optional[int] = Field(default=None)
+    end_page: Optional[int] = Field(default=None)
+    segments: List[ScriptSegment] = Field(default_factory=list)
+    fidelity: Optional[Dict[str, Any]] = Field(default=None, description="Per-chapter fidelity report")
 
 
 class PDFProcessingResult(BaseModel):
@@ -94,6 +124,7 @@ class PDFProcessingResult(BaseModel):
     total_characters: int = Field(..., description="Total character count")
     total_chunks: int = Field(..., description="Total number of chunks")
     chunks: List[TextChunk] = Field(..., description="Text chunks")
+    chapters: List[ChapterSchema] = Field(default_factory=list, description="Detected chapter structure")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="PDF metadata")
     processing_time: float = Field(..., description="Processing time in seconds")
     created_at: datetime = Field(default_factory=datetime.utcnow, description="Processing timestamp")

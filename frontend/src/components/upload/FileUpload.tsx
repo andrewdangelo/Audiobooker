@@ -148,6 +148,7 @@ export default function FileUpload() {
         try {
           const processRes = await uploadService.processPDF(result.pdfPath, userId, {
             credit_type: selectedCreditType,
+            // voice_id omitted → processor uses DEFAULT_BASIC_VOICE_ID from env
           })
           processorJobId = processRes.job_id as string | undefined
         } catch (procErr: any) {

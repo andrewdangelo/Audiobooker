@@ -14,6 +14,9 @@ from typing import Any, Dict, List, Optional, Callable, Tuple, Set
 import httpx
 from app.core.logging_config import Logger
 from app.core.config_settings import settings
+from app.services.character_discovery import CharacterDiscovery, CharacterRegistry
+from app.services.syntax_analyzer import SyntaxAnalyzer, SpeakerContext, DialogueTagAnalysis
+from app.services.fidelity_verifier import FidelityVerifier
 
 
 # ---------------------------------------------------------------------------
@@ -72,15 +75,6 @@ class TextUnit:
     continuation_quote: bool = False
     chunk_id: Optional[int] = None
     heuristic_confidence: float = 0.0
-
-
-@dataclass
-class Character:
-    name: str
-    gender: str
-    description: str
-    mentioned_count: int = 0
-    aliases: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +168,7 @@ class SpeakerChunker(Logger):
         self.model              = model
         self.provider           = provider
         self._uid_to_idx:       Dict[int, int] = {}   # populated in _smart_split
-        self._alias_to_canonical: Dict[str, str] = {} # populated in _discover_characters
+        self._alias_to_canonical: Dict[str, str] = {} # populated in _chunk_by_speaker_async
         self.api                = _InternalAPI(
             base_url = settings.INTERNAL_LLM_BASE_URL,
             model    = model,
@@ -460,338 +454,7 @@ class SpeakerChunker(Logger):
         return merged
 
     # ====================================================================
-    # STEP 3 — character discovery via web-RAG (nickname-aware)
-    # ====================================================================
-
-    @staticmethod
-    def _parse_character_json(raw: str) -> List[Dict]:
-        clean = re.sub(r"```(?:json)?|```", "", raw).strip()
-        try:
-            parsed = json.loads(clean)
-            if isinstance(parsed, list):
-                return parsed
-            return parsed.get("characters", [])
-        except json.JSONDecodeError:
-            recovered = []
-            for m in re.finditer(r'\{[^{}]*"name"[^{}]*\}', clean, re.DOTALL):
-                try:
-                    obj = json.loads(m.group(0))
-                    if obj.get("name"):
-                        recovered.append(obj)
-                except json.JSONDecodeError:
-                    continue
-            return recovered
-
-
-    def _extract_characters_from_text(self, full_text: str) -> List[Dict]:
-        self.logger.info("Falling back to text-based character extraction...")
-        
-        # Use more slices across the full book
-        text_len = len(full_text)
-        samples = [
-            full_text[:8000],
-            full_text[text_len//5 : text_len//5 + 6000],
-            full_text[text_len//3 : text_len//3 + 6000],
-            full_text[text_len//2 : text_len//2 + 6000],
-            full_text[2*text_len//3 : 2*text_len//3 + 6000],
-        ]
-        
-        all_chars = []
-        
-        for i, sample in enumerate(samples):
-            try:
-                answer = self.api.sync_chat(
-                    prompt_messages=[
-                        ["system", (
-                            "You are a literary analysis assistant. "
-                            "Extract every named character who speaks or acts in this text.\n\n"
-                            "STRICT RULES:\n"
-                            "1. Canonical name must be the character's REAL full name.\n"
-                            "2. aliases MUST include the most common short name used in dialogue.\n"
-                            "3. NEVER use non-English characters in names or aliases.\n"
-                            "4. If unsure about an alias, OMIT it.\n\n"
-                            "Return ONLY valid JSON — no markdown, no preamble.\n\n"
-                            '{{"characters": [{{"name": "string", "aliases": ["string"], "gender": "male|female|unknown", "description": "1 sentence"}}]}}'
-                        )],
-                        ["user", f"Text sample {i+1}:\n\n{sample}\n\nReturn ONLY the JSON."],
-                    ],
-                    inputs={},
-                )
-                chars = self._parse_character_json(answer)
-                self.logger.info(f"Text sample {i+1}: found {len(chars)} characters")
-                all_chars.extend(chars)
-            except Exception as e:
-                self.logger.warning(f"Text sample {i+1} extraction failed: {e}")
-                continue
-        
-        # Deduplicate by name
-        seen = {}
-        deduped = []
-        for c in all_chars:
-            name = c.get("name", "").strip().lower()
-            if name and name not in seen:
-                seen[name] = True
-                deduped.append(c)
-        
-        self.logger.info(f"Text fallback total: {len(deduped)} unique characters found")
-        return deduped
-
-
-    def _discover_characters(self, book_title: str, full_text: str) -> List[Character]:
-        self.logger.info(f"Discovering characters: '{book_title}'")
-
-        system_msg = (
-            f"You are a literary analysis assistant. "
-            f"Using what you know about the '{book_title}' book, list every named character from it'.\n\n"
-            "STRICT RULES:\n"
-            "1. Canonical name must be the character's REAL full name — no nicknames embedded in it.\n"
-            "   CORRECT: 'Dallas Winston'   WRONG: 'Dally Winston' or \"Dallas 'Dally' Winston\"\n"
-            "2. aliases MUST include the most common short name used in dialogue — required, not optional.\n"
-            "   e.g. 'Ponyboy Curtis' → aliases must include 'Ponyboy'\n"
-            "   e.g. 'Dallas Winston' → aliases must include 'Dally'\n"
-            "   e.g. 'Sodapop Curtis' → aliases must include 'Soda'\n"
-            "3. aliases must ONLY be real nicknames or shortened names — never another character's name.\n"
-            "4. NEVER truncate names (e.g. 'Ponyc' is NOT valid).\n"
-            "5. NEVER use non-English characters in names or aliases.\n"
-            "6. NEVER include a name as an alias if it belongs to a different character.\n"
-            "7. If unsure about an alias, OMIT it.\n\n"
-            "Return ONLY valid JSON — no markdown, no preamble.\n\n"
-            '{{"characters": [{{'
-            '"name": "clean full real name — no embedded nicknames", '
-            '"aliases": ["most common short name", "other nickname"], '
-            '"gender": "male|female|unknown", '
-            '"description": "One sentence with the age group, physical and mental character traits in universal terms (focus), and relevance to and role in the story"'
-            '}}]}}'
-        )
-
-        # system_msg = (
-        #     f"You are a literary analysis assistant. "
-        #     f"List every named character from '{book_title}'.\n\n"
-        #     "STRICT RULES:\n"
-        #     "1. Canonical name must be the character's REAL full name — no nicknames embedded in it.\n"
-        #     "   CORRECT: 'Dallas Winston'   WRONG: 'Dally Winston' or \"Dallas 'Dally' Winston\"\n"
-        #     "2. aliases MUST include the most common short name used in dialogue — required, not optional.\n"
-        #     "   e.g. 'Ponyboy Curtis' → aliases must include 'Ponyboy'\n"
-        #     "   e.g. 'Dallas Winston' → aliases must include 'Dally'\n"
-        #     "   e.g. 'Sodapop Curtis' → aliases must include 'Soda'\n"
-        #     "3. aliases must ONLY be real nicknames or shortened names — never another character's name.\n"
-        #     "4. NEVER truncate names (e.g. 'Ponyc' is NOT valid).\n"
-        #     "5. NEVER use non-English characters in names or aliases.\n"
-        #     "6. NEVER include a name as an alias if it belongs to a different character.\n"
-        #     "7. If unsure about an alias, OMIT it.\n\n"
-        #     "Return ONLY valid JSON — no markdown, no preamble.\n\n"
-        #     '{{"characters": [{{'
-        #     '"name": "clean full real name — no embedded nicknames", '
-        #     '"aliases": ["most common short name", "other nickname"], '
-        #     '"gender": "male|female|unknown", '
-        #     '"description": "1 sentence"'
-        #     '}}]}}'
-        # )
-        user_msg = (
-            f"List every named character from '{book_title}' including nicknames and aliases. "
-            "Return ONLY the JSON."
-        )
-
-        raw_chars: List[Dict] = []
-        try:
-            data, _ = self.api.sync_rag_chat(
-                prompt_messages=[["system", system_msg], ["user", user_msg]],
-                inputs={},
-                search_query_template=None,
-                # deployment_name="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-                timeout=120,
-            )
-            breakpoint()
-            raw_chars = data.get("characters", [])
-            self.logger.info(f"Cloudflare structured returned {len(raw_chars)} raw candidates")
-        except Exception as e:
-            self.logger.warning(f"Cloudflare character discovery failed: {e}")
-
-        if not raw_chars:
-            self.logger.warning("Cloudflare returned 0 characters — using text fallback")
-            raw_chars = self._extract_characters_from_text(full_text)
-
-        false_positive_re = [
-            r'^(chapter|prologue|epilogue|book|part)(\s+\d+)?$',
-            r'^(the\s+)?pattern$',
-            r'^(the\s+)?wheel(\s+of\s+time)?$',
-            r'^(the\s+)?one\s+power$',
-        ]
-
-        validated: List[Character] = []
-        seen:      Set[str]        = set()
-        alias_to_canonical: Dict[str, str] = {}
-
-        for c in raw_chars:
-            name = c.get("name", "").strip()
-            if not name or len(name) < 2:
-                continue
-            if any(re.match(p, name, re.IGNORECASE) for p in false_positive_re):
-                continue
-
-            if not re.match(r'^[A-Za-z\s\-\.\'\,]+$', name):
-                self.logger.debug(f"Filtered non-ASCII name: {name}")
-                continue
-
-            name = re.sub(r"\s*['\"].*?['\"]\s*", " ", name).strip()
-            name = re.sub(r"\s+", " ", name)
-
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-
-            raw_aliases = c.get("aliases", [])
-            clean_aliases = [
-                a.strip() for a in raw_aliases
-                if isinstance(a, str)
-                and len(a.strip()) >= 2
-                and not re.search(r'\d', a)
-                and re.match(r'^[A-Za-z\s\-\.\']+$', a.strip())
-                and a.strip().lower() != name.lower()
-            ]
-
-            first_name = name.split()[0]
-            if (first_name.lower() != name.lower()
-                    and len(first_name) >= 3
-                    and first_name not in clean_aliases
-                    and first_name.lower() not in alias_to_canonical):
-                clean_aliases.append(first_name)
-
-            name_mentions  = full_text.lower().count(name.lower().split()[0])
-            alias_mentions = sum(full_text.lower().count(a.lower()) for a in clean_aliases)
-            if name_mentions == 0 and alias_mentions == 0:
-                self.logger.debug(f"Filtered zero-mention character: {name}")
-                continue
-
-            validated.append(Character(
-                name=name,
-                gender=c.get("gender", "unknown"),
-                description=c.get("description", ""),
-                mentioned_count=full_text.lower().count(name.lower()),
-                aliases=clean_aliases,
-            ))
-
-            alias_to_canonical[name.lower()] = name
-            for alias in clean_aliases:
-                alias_to_canonical[alias.lower()] = name
-
-        alias_counts: Dict[str, List[str]] = {}
-        for alias, canonical in alias_to_canonical.items():
-            alias_counts.setdefault(alias, []).append(canonical)
-        alias_to_canonical = {
-            alias: canonicals[0]
-            for alias, canonicals in alias_counts.items()
-            if len(canonicals) == 1
-        }
-
-        alias_to_chars: Dict[str, List[Character]] = {}
-        for char in validated:
-            for alias in char.aliases:
-                alias_to_chars.setdefault(alias.lower(), []).append(char)
-
-        chars_to_remove: Set[str] = set()
-        for alias, chars in alias_to_chars.items():
-            if len(chars) > 1:
-                chars.sort(key=lambda c: c.mentioned_count, reverse=True)
-                for loser in chars[1:]:
-                    chars_to_remove.add(loser.name.lower())
-                    for a in loser.aliases:
-                        if a not in chars[0].aliases:
-                            chars[0].aliases.append(a)
-                        alias_to_canonical[a.lower()] = chars[0].name
-
-        validated = [c for c in validated if c.name.lower() not in chars_to_remove]
-
-        by_length = sorted(validated, key=lambda c: len(c.name), reverse=True)
-        absorbed:  Set[str]        = set()
-        deduped:   List[Character] = []
-
-        for char in by_length:
-            if char.name.lower() in absorbed:
-                continue
-            deduped.append(char)
-            for other in by_length:
-                if other.name != char.name and re.match(
-                    r'(?i)^' + re.escape(other.name) + r'\b', char.name
-                ):
-                    absorbed.add(other.name.lower())
-
-        if not any(c.name == "Narrator" for c in deduped):
-            deduped.insert(0, Character("Narrator", "neutral", "The narrative voice of the story", 0))
-
-        deduped.sort(key=lambda c: c.mentioned_count, reverse=True)
-        self._alias_to_canonical = alias_to_canonical
-
-        self.logger.info(
-            f"Character discovery complete — {len(deduped)} characters, "
-            f"{len(alias_to_canonical)} name/alias entries"
-        )
-        for c in deduped[:15]:
-            alias_str = f" aliases: {c.aliases}" if c.aliases else ""
-            self.logger.info(f"  → {c.name} ({c.gender}, {c.mentioned_count}x){alias_str}")
-
-        sample = {k: v for k, v in list(alias_to_canonical.items())[:30]}
-        self.logger.info(f"Alias map sample (first 30): {sample}")
-
-        return deduped
-
-    # ====================================================================
-    # STEP 4 — book primer
-    # ====================================================================
-
-    def _generate_book_primer(self, intro_text: str) -> Dict[str, str]:
-        self.logger.info("Generating book primer...")
-        try:
-            answer = self.api.sync_chat(
-                prompt_messages=[
-                    ["system", (
-                        "You are a literary analysis assistant. "
-                        "Analyze the opening text and return ONLY valid JSON — no markdown, no preamble.\n\n"
-                        "CRITICAL RULES:\n"
-                        "- If the text uses 'he', 'she', or character names to describe actions, "
-                        "it is THIRD PERSON and narrator_name MUST be 'Narrator'.\n"
-                        "- If the narrator uses 'I' or 'me' to describe their own actions, "
-                        "it is FIRST PERSON. In that case narrator_name MUST be the actual "
-                        "character name of the 'I' narrator — NEVER 'Narrator'.\n"
-                        "- To find the First Person narrator's name: look for dialogue tags, "
-                        "other characters addressing the narrator by name, or self-identification.\n"
-                        "- When in doubt about POV, default to Third Person with narrator_name 'Narrator'.\n\n"
-                        '{{"pov": "First Person|Third Person", "narrator_name": "string", "tense": "Past|Present"}}'
-                    )],
-                    ["user", (
-                        f"Opening text:\n\n{intro_text[:6000]}\n\n"
-                        "What is the POV? If First Person, what is the narrator's actual name "
-                        "(look for other characters calling them by name)? "
-                        "Return ONLY the JSON."
-                    )],
-                ],
-                inputs={},
-                timeout=120,
-            )
-            clean = re.sub(r"```(?:json)?|```", "", answer).strip()
-            data  = json.loads(clean)
-
-            pov           = data.get("pov", "Third Person")
-            narrator_name = data.get("narrator_name", "Narrator")
-
-            if pov == "Third Person":
-                narrator_name = "Narrator"
-
-            result = {
-                "pov":           pov,
-                "narrator_name": narrator_name,
-                "tense":         data.get("tense", "Past"),
-            }
-        except Exception as e:
-            self.logger.warning(f"Primer failed: {e} — using defaults")
-            result = {"pov": "Third Person", "narrator_name": "Narrator", "tense": "Past"}
-
-        self.logger.info(f"Primer → {result['pov']} | {result['narrator_name']} | {result['tense']}")
-        return result
-
-    # ====================================================================
-    # STEP 5 — heuristic anchoring (alias-aware)
+    # STEP 3 — scene windows
     # ====================================================================
 
     def _build_scene_windows(
@@ -939,29 +602,6 @@ class SpeakerChunker(Logger):
             "0|Speaker Name\n"
             "1|Speaker Name\n\n"
             "OUTPUT ONLY PIPE-DELIMITED LINES. No explanation. No reasoning. No JSON."
-        )
-
-    # ====================================================================
-    # STEP 7 — attribution system prompt
-    # ====================================================================
-
-    def _build_attribution_system_prompt(self, primer: Dict[str, str]) -> str:
-        return (
-            f"You are an expert dialogue attribution system.\n\n"
-            f"BOOK CONTEXT:\n"
-            f"- POV: {primer.get('pov', 'Third Person')}\n"
-            f"- Narrator: {primer.get('narrator_name', 'Narrator')}\n"
-            f"- Tense: {primer.get('tense', 'Past')}\n\n"
-            "TASK: For each [Q] or [CONT] segment, identify the speaker.\n\n"
-            "RULES:\n"
-            "1. 'Hello,' said John → John. Mary replied, 'Yes.' → Mary.\n"
-            "2. Names at START of quote = person ADDRESSED not speaker. 'John, come here!' → someone else speaks.\n"
-            "3. [CONT] = ALWAYS same speaker as the immediately preceding quote.\n"
-            "4. NEVER output he/she/they — resolve to actual character name from context.\n"
-            "5. Truly ambiguous → Unknown\n\n"
-            "OUTPUT: one pipe-delimited line per segment: ID|Speaker\n"
-            "Example:\n15|Rand\n16|Moiraine\n17|Moiraine\n\n"
-            "OUTPUT ONLY PIPE-DELIMITED TAGS. NO explanations. NO JSON."
         )
 
 
@@ -1157,120 +797,7 @@ class SpeakerChunker(Logger):
         return {}
 
     # ====================================================================
-    # STEP 8 — batch formatting  (FIX: O(1) context lookup via _uid_to_idx)
-    # ====================================================================
-
-    def _get_surrounding_context(self, unit: TextUnit, all_units: List[TextUnit],
-                                  window: int = 2) -> Tuple[str, str]:
-        # O(1) lookup instead of O(n) linear scan
-        idx = self._uid_to_idx.get(unit.uid)
-        if idx is None:
-            return "", ""
-        before = [all_units[i].text.strip().replace("\n", " ")[:120]
-                  for i in range(max(0, idx - window), idx) if not all_units[i].is_quote]
-        after  = [all_units[i].text.strip().replace("\n", " ")[:120]
-                  for i in range(idx + 1, min(len(all_units), idx + window + 1)) if not all_units[i].is_quote]
-        return " ".join(filter(None, before)), " ".join(filter(None, after))
-
-    def _format_batch_lines(self, units: List[TextUnit], all_units: List[TextUnit]) -> str:
-        lines = []
-        for u in units:
-            label      = "[CONT]" if u.continuation_quote else "[Q]"
-            quote_text = u.text.replace("\n", " ").strip()[:MAX_QUOTE_CHARS_IN_PROMPT]
-            before_ctx, after_ctx = self._get_surrounding_context(u, all_units)
-            before_ctx = before_ctx[:MAX_CONTEXT_CHARS_IN_PROMPT]
-            after_ctx  = after_ctx[:MAX_CONTEXT_CHARS_IN_PROMPT]
-            line = f"{u.uid} {label}: {quote_text}"
-            if before_ctx:
-                line = f"[Ctx: {before_ctx}] {line}"
-            if after_ctx:
-                line = f"{line} [After: {after_ctx}]"
-            lines.append(line)
-        return "\n".join(lines)
-
-    @staticmethod
-    def _parse_pipe_response(content: str, valid_uids: Set[int]) -> Dict[int, str]:
-        result: Dict[int, str] = {}
-        for m in re.compile(r'^(\d+)\s*[|:]\s*(.+?)\s*$', re.MULTILINE).finditer(content):
-            try:
-                uid     = int(m.group(1))
-                speaker = m.group(2).strip()
-                if uid in valid_uids and speaker:
-                    result[uid] = speaker
-            except ValueError:
-                continue
-        return result
-
-    # ====================================================================
-    # STEP 9 — async batch classification
-    # ====================================================================
-
-    async def _classify_batch_async(self, client: httpx.AsyncClient, units: List[TextUnit],
-                                     all_units: List[TextUnit], known_chars: str,
-                                     system_prompt: str) -> Dict[int, str]:
-        batch_text = self._format_batch_lines(units, all_units)
-        valid_uids = {u.uid for u in units}
-
-        prompt_messages = [
-            ["system", system_prompt],
-            ["user", (
-                f"Characters in this book: {known_chars}\n\n"
-                f"Tag these dialogue segments:\n{batch_text}\n\n"
-                "Output ONLY pipe-delimited tags (ID|Speaker), one per line."
-            )],
-        ]
-
-        max_retries = 2
-        for attempt in range(max_retries):
-            try:
-                answer = await self.api.async_chat(
-                    client=client,
-                    prompt_messages=prompt_messages,
-                    inputs={},
-                    timeout=REQUEST_TIMEOUT_SECONDS,
-                )
-
-                result = self._parse_pipe_response(answer, valid_uids)
-                if result:
-                    return result
-
-                # fallback JSON parse
-                try:
-                    clean = re.sub(r"```(?:json)?|```", "", answer).strip()
-                    tags  = json.loads(clean).get("tags", {})
-                    for k, v in tags.items():
-                        uid = int(k)
-                        if uid in valid_uids:
-                            result[uid] = str(v) if not isinstance(v, dict) else v.get("speaker", "Narrator")
-                    if result:
-                        return result
-                except Exception:
-                    pass
-
-                if attempt < max_retries - 1:
-                    self.logger.warning(f"Empty parse — retrying (attempt {attempt + 1})")
-                    await asyncio.sleep(0.5)
-                else:
-                    self.logger.warning(f"Batch parse failed — {len(units)} units untagged")
-
-            except httpx.HTTPStatusError as e:
-                self.logger.error(f"HTTP {e.response.status_code}: {e.response.text[:200]}")
-                if e.response.status_code == 503 and attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** (attempt + 1))
-            except httpx.TimeoutException:
-                if attempt < max_retries - 1:
-                    self.logger.warning(f"Timeout — retrying (attempt {attempt + 1})")
-                else:
-                    self.logger.error(f"Batch timed out after {REQUEST_TIMEOUT_SECONDS}s")
-            except Exception as e:
-                self.logger.error(f"Unexpected batch error: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(0.5)
-
-        return {}
-
-    # ====================================================================
-    # STEP 10 — entry point
+    # STEP 7 — entry point
     # ====================================================================
 
     def chunk_by_speaker(
@@ -1285,90 +812,102 @@ class SpeakerChunker(Logger):
         )
 
 
-    async def _chunk_by_speaker_async(self, processed_data:Dict[str, Any], book_title:str = "Unknown Book", concurrency:int = MAX_CONCURRENT_REQUESTS,
-                                    progress_callback: Optional[Callable] = None,) -> Dict[str, Any]:
+    async def _chunk_by_speaker_async(self, processed_data: Dict[str, Any], book_title: str = "Unknown Book",
+                                      concurrency: int = MAX_CONCURRENT_REQUESTS,
+                                      progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
 
         start_time = time.time()
         chunks     = processed_data.get("chunks", [])
+        fidelity   = FidelityVerifier()
 
         # 1. Stitch + split
         full_text, char_map = self._stitch_chunks(chunks)
         all_units           = self._smart_split(full_text, char_map)
-        
-        total_units         = len(all_units)
-        total_quotes        = sum(1 for u in all_units if u.is_quote)
-        self.logger.info(f"Split → {total_units} units ({total_quotes} quotes, {total_units - total_quotes} narration)")
 
-        # 2. Primer + title in parallel
-        intro_text = " ".join(c["text"] for c in chunks[:30])
+        total_units  = len(all_units)
+        total_quotes = sum(1 for u in all_units if u.is_quote)
+        self.logger.info(f"Split -> {total_units} units ({total_quotes} quotes, {total_units - total_quotes} narration)")
+
+        # Fidelity: verify smart-split preserved all text
+        split_report = fidelity.verify_smart_split(full_text, all_units)
+        if not split_report.passed:
+            self.logger.warning("Smart-split fidelity check failed (confidence=%.4f)", split_report.confidence_score)
+
+        # 2. Title extraction (if needed)
         need_title = not book_title or book_title == "Unknown Book" or self._looks_like_job_id(book_title)
-
         if need_title:
-            self.logger.info("Running primer + title extraction in parallel...")
-            primer, book_title = await asyncio.gather(
-                asyncio.to_thread(self._generate_book_primer, intro_text),
-                asyncio.to_thread(self._extract_book_title, chunks),
-            )
-        else:
-            primer = await asyncio.to_thread(self._generate_book_primer, intro_text)
-        
-        # 3. Character discovery
-        characters      = self._discover_characters(book_title, full_text)
-        known_chars_str = ", ".join(c.name for c in characters if c.name != "Narrator")
-        known_char_names: Set[str] = {c.name for c in characters}
-        known_char_names |= set(self._alias_to_canonical.keys())
+            book_title = await asyncio.to_thread(self._extract_book_title, chunks)
+
+        # 3. Character discovery (new hybrid NER + LLM module)
+        char_discovery = CharacterDiscovery(llm_api=self.api)
+        registry       = await asyncio.to_thread(char_discovery.discover, full_text, book_title)
+
+        characters      = registry.characters
+        alias_map       = dict(registry.alias_to_canonical)
+        narrator_name   = registry.narrator_name
+        pov             = registry.pov
+        self._alias_to_canonical = alias_map
+
+        known_chars_str  = ", ".join(c.name for c in characters if c.name != "Narrator")
+        known_char_names = {c.name for c in characters} | set(alias_map.keys())
         self.logger.info(f"Characters + aliases: {len(known_char_names)} total name entries")
 
-        # 4. Pre-tag narration
-        alias_map = dict(self._alias_to_canonical)
-        narrator_name = primer.get("narrator_name", "Narrator")
+        primer = {
+            "pov":           pov,
+            "narrator_name": narrator_name,
+            "tense":         "Past",
+        }
 
-        # Correct First Person narrator if LLM defaulted to "Narrator"
-        if primer.get("pov") == "First Person" and narrator_name == "Narrator":
-            best_candidate = None
-            best_count     = 0
-            for char in characters:
-                if char.name == "Narrator":
-                    continue
-                first = char.name.split()[0].lower()
-                count = intro_text.lower().count(first)
-                if count >= 5 and count > best_count:
-                    best_count     = count
-                    best_candidate = char.name
-            if best_candidate:
-                narrator_name           = best_candidate
-                primer["narrator_name"] = narrator_name
-                self.logger.info(f"First Person narrator corrected to: '{narrator_name}' ({best_count} mentions in intro)")
-            else:
-                narrator_name           = "Narrator"
-                primer["narrator_name"] = "Narrator"
-                self.logger.warning("Could not confidently identify First Person narrator — defaulting to 'Narrator'")
-
-        # Resolve narrator alias to canonical
-        narrator_canonical = alias_map.get(narrator_name.lower())
-        if narrator_canonical:
-            narrator_name           = narrator_canonical
-            primer["narrator_name"] = narrator_name
-            self.logger.info(f"Narrator name resolved to canonical: '{narrator_name}'")
+        # 4. Syntax pre-pass: analyse dialogue tags before LLM
+        syntax    = SyntaxAnalyzer()
+        context   = SpeakerContext()
+        char_genders = {c.name: c.gender for c in characters}
 
         results_map: Dict[int, str] = {}
+        syntax_resolved = 0
+
         for u in all_units:
             if not u.is_quote:
                 results_map[u.uid] = narrator_name
+                context.update_from_narration(u.text, alias_map, char_genders)
+                continue
 
-        self.logger.info(f"Pre-tagged {total_units - total_quotes} narration units as '{narrator_name}'")
+            idx = self._uid_to_idx.get(u.uid, 0)
+            window_start = max(0, idx - 5)
+            window_end   = min(len(all_units), idx + 6)
+            surrounding  = all_units[window_start:window_end]
 
-        # 5. Build scene windows
-        system_prompt = self._build_scene_system_prompt(primer, known_chars_str)
-        scenes        = self._build_scene_windows(full_text, all_units)
-        total_scenes  = len(scenes)
+            analysis = syntax.analyze_quote(u, surrounding, registry, context)
 
-        # 6. Async scene attribution
+            if analysis.confidence >= 0.7 and analysis.speaker_candidates:
+                speaker = analysis.speaker_candidates[0]
+                results_map[u.uid] = speaker
+                u.heuristic_confidence = analysis.confidence
+                context.update_after_attribution(speaker, char_genders.get(speaker, "unknown"))
+                syntax_resolved += 1
+
+        self.logger.info(f"Syntax pre-pass: resolved {syntax_resolved}/{total_quotes} quotes locally")
+
+        # 5. Build scene windows for remaining unresolved quotes
+        system_prompt    = self._build_scene_system_prompt(primer, known_chars_str)
+        unresolved_units = [u for u in all_units if u.is_quote and u.uid not in results_map]
+        scenes           = self._build_scene_windows(full_text, all_units)
+
+        # Filter scenes to only those with unresolved quotes
+        unresolved_uids = {u.uid for u in unresolved_units}
+        if unresolved_uids:
+            for scene in scenes:
+                scene["quotes"] = [q for q in scene["quotes"] if q.uid in unresolved_uids]
+            scenes = [s for s in scenes if s["quotes"]]
+
+        total_scenes = len(scenes)
+
+        # 6. Async LLM scene attribution (only for unresolved quotes)
         llm_processing_time = 0.0
         scene_times: List[float] = []
 
         if total_scenes > 0:
-            self.logger.info(f"Processing {total_scenes} scenes @ concurrency={concurrency}")
+            self.logger.info(f"LLM processing {total_scenes} scenes ({len(unresolved_uids)} remaining quotes) @ concurrency={concurrency}")
             completed_count  = 0
             processing_start = time.time()
             semaphore        = asyncio.Semaphore(concurrency)
@@ -1377,12 +916,10 @@ class SpeakerChunker(Logger):
                 nonlocal completed_count
                 async with semaphore:
                     t0      = time.time()
-                    mapping = await self._classify_scene_async(
-                        client, scene, system_prompt, alias_map)
+                    mapping = await self._classify_scene_async(client, scene, system_prompt, alias_map)
                     dur     = time.time() - t0
 
-                    # First-person normalisation — "Narrator" and "I" → narrator_name
-                    if primer.get("pov") == "First Person" and narrator_name != "Narrator":
+                    if pov == "First Person" and narrator_name != "Narrator":
                         for uid in list(mapping.keys()):
                             if mapping[uid] in ("Narrator", "I"):
                                 mapping[uid] = narrator_name
@@ -1392,7 +929,11 @@ class SpeakerChunker(Logger):
                         for uid, spk in mapping.items()
                     }
                     results_map.update(validated_mapping)
-                    
+
+                    # Update speaker context from LLM results
+                    for uid, spk in validated_mapping.items():
+                        context.update_after_attribution(spk, char_genders.get(spk, "unknown"))
+
                     scene_times.append(dur)
                     completed_count += 1
 
@@ -1432,8 +973,8 @@ class SpeakerChunker(Logger):
                     f"min={min(scene_times):.1f}s | max={max(scene_times):.1f}s"
                 )
         else:
-            self.logger.error(f"ISSUE getting scene quotes")
-        
+            self.logger.info("All quotes resolved by syntax pre-pass — no LLM needed")
+
         # 7. Heuristic recovery for missed quotes
         missed_before_recovery = [u for u in all_units if u.is_quote and u.uid not in results_map]
         if missed_before_recovery:
@@ -1451,21 +992,19 @@ class SpeakerChunker(Logger):
             for u in missed_before_recovery:
                 idx = self._uid_to_idx.get(u.uid, 0)
 
-                # Check narration AFTER the quote
                 for j in range(idx + 1, min(len(all_units), idx + 5)):
                     next_u = all_units[j]
                     if next_u.is_quote:
                         break
                     m = speech_re.search(next_u.text)
                     if m:
-                        raw       = (m.group(1) or m.group(4) or "").strip()
+                        raw = (m.group(1) or m.group(4) or "").strip()
                         if raw:
                             canonical = alias_map.get(raw.lower(), raw.title())
                             results_map[u.uid] = canonical
                             recovered += 1
                             break
 
-                # Check narration BEFORE the quote
                 if u.uid not in results_map:
                     for j in range(max(0, idx - 4), idx):
                         prev_u = all_units[j]
@@ -1473,14 +1012,13 @@ class SpeakerChunker(Logger):
                             continue
                         m = speech_re.search(prev_u.text)
                         if m:
-                            raw       = (m.group(1) or m.group(4) or "").strip()
+                            raw = (m.group(1) or m.group(4) or "").strip()
                             if raw:
                                 canonical = alias_map.get(raw.lower(), raw.title())
                                 results_map[u.uid] = canonical
                                 recovered += 1
                                 break
 
-                # Check if previous quote has same speaker (continuation — no narration gap)
                 if u.uid not in results_map:
                     for j in range(idx - 1, max(0, idx - 4), -1):
                         prev_u = all_units[j]
@@ -1494,45 +1032,9 @@ class SpeakerChunker(Logger):
 
             self.logger.info(f"Heuristic recovery: recovered {recovered}/{len(missed_before_recovery)} missed quotes")
 
-        # 8. Reassembly
+        # 8. Reassembly with single merge pass
         self.logger.info("Reassembling segments...")
-        final_segments: List[Dict[str, Any]]      = []
-        current_segment: Optional[Dict[str, Any]] = None
-
-        for unit in all_units:
-            speaker = results_map.get(unit.uid, "Unknown" if unit.is_quote else narrator_name)
-
-            if current_segment is None:
-                current_segment = {"speaker": speaker, "text": unit.text, 
-                                "chunk_id": unit.chunk_id, "is_quote": unit.is_quote}
-            elif (
-                current_segment["speaker"] == speaker
-                and not unit.is_quote                          # ← never merge quotes
-                and not current_segment["is_quote"]            # ← never merge into a quote
-                and (unit.chunk_id is None or unit.chunk_id == current_segment["chunk_id"])
-            ):
-                current_segment["text"] += unit.text
-            else:
-                final_segments.append(current_segment)
-                current_segment = {"speaker": speaker, "text": unit.text,
-                                "chunk_id": unit.chunk_id, "is_quote": unit.is_quote}
-
-        if current_segment:
-            final_segments.append(current_segment)
-
-        # 9. Filter empty/junk segments
-        STRIP_CHARS   = " \t\n\r\u201c\u201d\u2018\u2019\"\'"
-        before_filter = len(final_segments)
-        final_segments = [
-            s for s in final_segments
-            if len(s.get("text", "").strip(STRIP_CHARS)) >= 2
-        ]
-        dropped = before_filter - len(final_segments)
-        if dropped:
-            self.logger.info(f"Filtered {dropped} empty/junk segments")
-
-        # 10. Post-processing normalization
-        is_first_person = primer.get("pov") == "First Person"
+        is_first_person = pov == "First Person"
 
         first_person_starters = re.compile(
             r'^[\"\u201c]?\s*I\s+(\'m|was|said|asked|told|thought|knew|felt|saw|heard|'
@@ -1541,81 +1043,67 @@ class SpeakerChunker(Logger):
             re.IGNORECASE
         )
 
-        for seg in final_segments:
-            canonical = alias_map.get(seg["speaker"].lower())
-            if canonical and canonical != seg["speaker"]:
-                seg["speaker"] = canonical
+        # Normalize all speakers first
+        for uid in list(results_map.keys()):
+            speaker = results_map[uid]
+            canonical = alias_map.get(speaker.lower())
+            if canonical and canonical != speaker:
+                results_map[uid] = canonical
                 continue
+            if is_first_person and narrator_name != "Narrator" and speaker in ("Unknown", "Narrator", "I"):
+                unit = all_units[self._uid_to_idx.get(uid, 0)]
+                if not unit.is_quote and first_person_starters.match(unit.text.strip()):
+                    results_map[uid] = narrator_name
+                elif speaker == "I":
+                    results_map[uid] = narrator_name
 
-            if (
-                is_first_person
-                and narrator_name != "Narrator"
-                and seg["speaker"] in ("Unknown", "Narrator", "I")
-            ):
-                text = seg["text"].strip()
-                if first_person_starters.match(text):
-                    seg["speaker"] = narrator_name
+        # Single merge pass
+        STRIP_CHARS = " \t\n\r\u201c\u201d\u2018\u2019\"\'"
+        final_segments: List[Dict[str, Any]] = []
+        current_segment: Optional[Dict[str, Any]] = None
 
-            if seg["speaker"] == "I" and is_first_person and narrator_name != "Narrator":
-                seg["speaker"] = narrator_name
+        for unit in all_units:
+            speaker = results_map.get(unit.uid, "Unknown" if unit.is_quote else narrator_name)
 
-        # Re-merge adjacent same-speaker NARRATION segments after normalization
-        # is_quote is still present here — used as guard, stripped at end
-        merged_segments: List[Dict[str, Any]] = []
-        current_m: Optional[Dict[str, Any]]   = None
-        for seg in final_segments:
-            if current_m is None:
-                current_m = dict(seg)
+            if current_segment is None:
+                current_segment = {"speaker": speaker, "text": unit.text,
+                                   "chunk_id": unit.chunk_id, "is_quote": unit.is_quote}
             elif (
-                current_m["speaker"] == seg["speaker"]
-                and not seg.get("is_quote")          # never merge quotes
-                and not current_m.get("is_quote")    # never merge into a quote
-                and (seg["chunk_id"] is None or seg["chunk_id"] == current_m["chunk_id"])
+                current_segment["speaker"] == speaker
+                and not unit.is_quote
+                and not current_segment["is_quote"]
+                and (unit.chunk_id is None or unit.chunk_id == current_segment["chunk_id"])
             ):
-                current_m["text"] += seg["text"]
+                current_segment["text"] += unit.text
             else:
-                merged_segments.append(current_m)
-                current_m = dict(seg)
-        if current_m:
-            merged_segments.append(current_m)
+                if len(current_segment.get("text", "").strip(STRIP_CHARS)) >= 2:
+                    final_segments.append(current_segment)
+                current_segment = {"speaker": speaker, "text": unit.text,
+                                   "chunk_id": unit.chunk_id, "is_quote": unit.is_quote}
 
-        # Strip is_quote now that re-merge is done
+        if current_segment and len(current_segment.get("text", "").strip(STRIP_CHARS)) >= 2:
+            final_segments.append(current_segment)
+
+        # 9. Fidelity final gate
+        known_char_set = {c.name for c in characters}
+        final_segments, gate_report = fidelity.run_final_gate(
+            original_text=full_text,
+            segments=final_segments,
+            known_characters=known_char_set,
+            alias_map=alias_map,
+            narrator_name=narrator_name,
+            pov=pov,
+        )
+
+        fidelity_dict = fidelity.generate_report_dict(gate_report)
+
+        # Strip is_quote from final output
         final_segments = [
             {k: v for k, v in s.items() if k != "is_quote"}
-            for s in merged_segments
+            for s in final_segments
         ]
 
-        # 11. Write missed quotes to moe.txt
-        still_missed = [u for u in all_units if u.is_quote and u.uid not in results_map]
-        if still_missed:
-            try:
-                with open("moe.txt", "w", encoding="utf-8") as f:
-                    f.write(f"MISSED QUOTES REPORT\n")
-                    f.write(f"Book:  {book_title}\n")
-                    f.write(f"Total: {len(still_missed)} missed / {total_quotes} total quotes\n")
-                    f.write(f"{'=' * 60}\n\n")
-                    for i, u in enumerate(still_missed, 1):
-                        idx       = self._uid_to_idx.get(u.uid, 0)
-                        prev_text = ""
-                        next_text = ""
-                        for j in range(max(0, idx - 3), idx):
-                            if not all_units[j].is_quote:
-                                prev_text += all_units[j].text.strip() + " "
-                        for j in range(idx + 1, min(len(all_units), idx + 4)):
-                            if not all_units[j].is_quote:
-                                next_text += all_units[j].text.strip() + " "
-                        f.write(f"─── Missed Quote #{i} (uid={u.uid}) ───\n")
-                        if prev_text.strip():
-                            f.write(f"  [Before] {prev_text.strip()[:200]}\n")
-                        f.write(f"  [QUOTE]  {u.text.strip()[:300]}\n")
-                        if next_text.strip():
-                            f.write(f"  [After]  {next_text.strip()[:200]}\n")
-                        f.write("\n")
-                self.logger.info(f"Missed quotes written to moe.txt ({len(still_missed)} quotes)")
-            except Exception as e:
-                self.logger.warning(f"Failed to write moe.txt: {e}")
-
-        # 12. Final stats
+        # 10. Final stats
         total_time     = time.time() - start_time
         covered_quotes = len([u for u in all_units if u.is_quote and u.uid in results_map])
         compression    = round(total_units / max(len(final_segments), 1), 2)
@@ -1623,15 +1111,19 @@ class SpeakerChunker(Logger):
         for seg in final_segments:
             speaker_counts[seg["speaker"]] = speaker_counts.get(seg["speaker"], 0) + 1
 
+        still_missed = total_quotes - covered_quotes
         self.logger.info(f"Quote coverage: {covered_quotes}/{total_quotes} ({round(covered_quotes/max(total_quotes,1)*100,1)}%)")
         self.logger.info(f"Final segments: {len(final_segments)} (compression {compression}x)")
         self.logger.info(f"Speaker distribution: {dict(sorted(speaker_counts.items(), key=lambda x: x[1], reverse=True))}")
+        self.logger.info(f"Syntax pre-pass resolved: {syntax_resolved} | LLM resolved: {covered_quotes - syntax_resolved - (len(missed_before_recovery) - still_missed if missed_before_recovery else 0)}")
+        self.logger.info(f"Fidelity: {fidelity_dict['overall_status']} (completeness={fidelity_dict['text_completeness']:.4f})")
         self.logger.info(f"Total time: {self._format_duration(total_time)}")
 
         return {
             "characters": [c.__dict__ for c in characters],
             "segments":   final_segments,
             "primer":     primer,
+            "fidelity":   fidelity_dict,
             "meta": {
                 "processing_time":        total_time,
                 "total_segments":         len(final_segments),
@@ -1641,6 +1133,7 @@ class SpeakerChunker(Logger):
                 "total_quotes":           total_quotes,
                 "covered_quotes":         covered_quotes,
                 "quote_coverage_pct":     round(covered_quotes / max(total_quotes, 1) * 100, 1),
+                "syntax_resolved":        syntax_resolved,
                 "avg_scene_time":         sum(scene_times) / len(scene_times) if scene_times else 0,
                 "min_scene_time":         min(scene_times) if scene_times else 0,
                 "max_scene_time":         max(scene_times) if scene_times else 0,
@@ -1648,8 +1141,8 @@ class SpeakerChunker(Logger):
                 "concurrency":            concurrency,
                 "speaker_distribution":   speaker_counts,
                 "book_context": {
-                    "pov":      primer.get("pov"),
-                    "narrator": primer.get("narrator_name"),
+                    "pov":      pov,
+                    "narrator": narrator_name,
                     "tense":    primer.get("tense"),
                 },
             },

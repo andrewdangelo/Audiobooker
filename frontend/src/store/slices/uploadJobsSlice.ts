@@ -6,20 +6,20 @@ import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import { audiobookService } from '@/services/audiobook.service'
 import { uploadService } from '@/services/upload.service'
-import { addAudiobook } from './audiobooksSlice'
+import { addAudiobook, pollNarrationStatus } from './audiobooksSlice'
 
 export const PIPELINE_STAGE_DEFS = [
   { id: 'uploading', label: 'Uploading' },
   { id: 'pdf_processing', label: 'PDF Processing' },
   { id: 'text_extraction', label: 'Text Extraction' },
-  { id: 'character_voice', label: 'Character Voice Assignment & Customization' },
-  { id: 'tts', label: 'TTS Conversion' },
-  { id: 'finalizing', label: 'Finalizing' },
+  { id: 'character_voice', label: 'AI Enrichment' },
+  { id: 'tts', label: 'Service Health Checks' },
+  { id: 'finalizing', label: 'Backend Sync' },
   { id: 'complete', label: 'Complete' },
 ] as const
 
 export type PipelineStageId = (typeof PIPELINE_STAGE_DEFS)[number]['id']
-export type StageStatus = 'pending' | 'in_progress' | 'complete' | 'failed'
+export type StageStatus = 'pending' | 'in_progress' | 'complete' | 'skipped' | 'failed'
 
 export interface UploadJobStage {
   id: PipelineStageId
@@ -267,14 +267,20 @@ const uploadJobsSlice = createSlice({
           status: 'complete',
           progressPercent: 100,
         })
+
+        // AI enrichment and health checks are optional steps run by the
+        // processor; mark them skipped if they never moved to in_progress.
+        const cvStage = j.stages.find((s) => s.id === 'character_voice')
         j.stages = patchStage(j.stages, 'character_voice', {
-          status: 'complete',
-          progressPercent: 100,
+          status: cvStage?.status === 'in_progress' ? 'complete' : 'skipped',
+          progressPercent: cvStage?.status === 'in_progress' ? 100 : undefined,
         })
+        const ttsStage = j.stages.find((s) => s.id === 'tts')
         j.stages = patchStage(j.stages, 'tts', {
-          status: 'complete',
-          progressPercent: 100,
+          status: ttsStage?.status === 'in_progress' ? 'complete' : 'skipped',
+          progressPercent: ttsStage?.status === 'in_progress' ? 100 : undefined,
         })
+
         j.stages = patchStage(j.stages, 'finalizing', {
           status: 'complete',
           progressPercent: 100,
@@ -333,6 +339,10 @@ export const pollProcessorJob = createAsyncThunk(
         try {
           const book = await audiobookService.getById(audiobookId, userId)
           dispatch(addAudiobook(book))
+          // If audio isn't ready yet, begin background narration polling
+          if (!book.audioUrl) {
+            dispatch(pollNarrationStatus({ bookId: audiobookId, userId }))
+          }
         } catch {
           /* library fetch can race rehydration; user can refresh */
         }

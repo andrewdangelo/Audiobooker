@@ -22,6 +22,7 @@
 
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
+import { checkout } from './cartSlice'
 import { storeService } from '@/services/backendService'
 import { paymentService } from '@/services/paymentService'
 import api from '@/services/api'
@@ -306,10 +307,14 @@ export const fetchStoreBookDetails = createAsyncThunk(
 )
 
 /**
- * Purchase a book (using credits or payment)
- * 
- * TODO: API INTEGRATION
- * This should connect to your payment/credits system
+ * Purchase a book (using credits or card via Stripe PaymentIntent).
+ *
+ * Credits path: deducts credits then fulfils library.
+ * Card path:    creates a PaymentIntent, but does NOT confirm it here — the
+ *               caller must use the returned client_secret with Stripe Elements
+ *               and confirm client-side, then call storeService.purchase with
+ *               the paymentIntentId.  This thunk is therefore only used for
+ *               credits; for card flow the UI drives the checkout.
  */
 export const purchaseBook = createAsyncThunk(
   'store/purchaseBook',
@@ -330,7 +335,6 @@ export const purchaseBook = createAsyncThunk(
       if (!userId) throw new Error('Not authenticated')
 
       if (useCredits) {
-        // Step 1: Deduct credits via payment service
         const response = await paymentService.payWithCredits({
           user_id: userId,
           items: [
@@ -346,13 +350,9 @@ export const purchaseBook = createAsyncThunk(
           metadata: { book_ids: bookId },
         })
 
-        // Step 2: Add book to library via backend service
-        // (payment service may also do this via internal call, but we ensure
-        //  it happens by calling the backend directly from the frontend too)
         try {
           await storeService.purchase(userId, bookId, 'credits')
         } catch (libraryErr) {
-          // Log but don't fail the whole purchase — credits already deducted
           console.warn('Library addition may have been handled by payment service:', libraryErr)
         }
 
@@ -363,14 +363,32 @@ export const purchaseBook = createAsyncThunk(
           remainingCredits: response.remaining_credits,
         }
       } else {
-        // Card purchase — handled by Stripe via payment service (checkout session)
-        const response = await storeService.purchase(userId, bookId, 'card')
+        // Card purchase: create a Stripe PaymentIntent so the UI can confirm it
+        // via Elements.  Library fulfillment happens after Stripe confirmation
+        // (through the checkout thunk or success callback, not here).
+        const intent = await paymentService.createPaymentIntent({
+          user_id: userId,
+          items: [
+            {
+              book_id: bookId,
+              quantity: 1,
+              price_cents: book.price,
+              credits: book.credits,
+              title: book.title,
+            },
+          ],
+          currency: 'usd',
+          metadata: { book_ids: bookId },
+        })
+
         return {
           bookId,
           creditsUsed: 0,
           amountCharged: book.price,
           remainingCredits: state.store.userCredits,
-          ...response,
+          clientSecret: intent.client_secret,
+          paymentIntentId: intent.payment_intent_id,
+          paymentId: intent.payment_id,
         }
       }
     } catch (error) {
@@ -626,6 +644,17 @@ const storeSlice = createSlice({
           )
         }
       })
+
+    // Cart checkout — sync basic credits from payment-service and premium credits from premium-purchase rows
+    builder.addCase(checkout.fulfilled, (state, action) => {
+      if (typeof action.payload.remainingCredits === 'number') {
+        state.userCredits = action.payload.remainingCredits
+      }
+      const prem = action.payload.premiumCreditsDeducted
+      if (typeof prem === 'number' && prem > 0) {
+        state.userPremiumCredits = Math.max(0, state.userPremiumCredits - prem)
+      }
+    })
   },
 })
 

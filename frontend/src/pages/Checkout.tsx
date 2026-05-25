@@ -52,6 +52,7 @@ import {
   selectCheckoutStep,
   selectIsCheckingOut,
   selectCartError,
+  selectLastFulfillmentWarning,
   removeFromCart,
   updateCartQuantity,
   setCheckoutStep,
@@ -711,20 +712,45 @@ function ConfirmStep({
 
 interface SuccessStepProps {
   itemCount: number
+  fulfillmentWarning: { failedBookIds: string[] } | null
+  storeBooks: StoreBook[]
 }
 
-function SuccessStep({ itemCount }: SuccessStepProps) {
+function SuccessStep({ itemCount, fulfillmentWarning, storeBooks }: SuccessStepProps) {
+  const failedTitles =
+    fulfillmentWarning?.failedBookIds.map(
+      (bid) => storeBooks.find((b) => b.id === bid)?.title ?? bid,
+    ) ?? []
+
   return (
     <div className="text-center py-12">
       <div className="w-20 h-20 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-6">
         <CheckCircle2 className="h-10 w-10 text-green-600 dark:text-green-400" />
       </div>
-      
+
       <h2 className="text-2xl font-bold mb-2">Purchase Complete!</h2>
-      <p className="text-muted-foreground mb-8">
-        {itemCount} audiobook{itemCount !== 1 ? 's have' : ' has'} been added to your library
+      <p className="text-muted-foreground mb-4">
+        {failedTitles.length > 0
+          ? `Your order included ${itemCount} audiobook${itemCount !== 1 ? 's' : ''}.`
+          : `${itemCount} audiobook${itemCount !== 1 ? 's have' : ' has'} been added to your library`}
       </p>
-      
+
+      {failedTitles.length > 0 && (
+        <div
+          className="mx-auto mb-8 max-w-lg rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left text-sm"
+          role="alert"
+        >
+          <p className="font-medium text-amber-900 dark:text-amber-100">
+            Some titles could not be added to your library
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            Payment went through, but fulfillment failed for:{' '}
+            <span className="font-medium text-foreground">{failedTitles.join(', ')}</span>.
+            Please contact support with your order confirmation.
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row gap-4 justify-center">
         <Button size="lg" asChild>
           <Link to="/library">
@@ -733,9 +759,7 @@ function SuccessStep({ itemCount }: SuccessStepProps) {
           </Link>
         </Button>
         <Button variant="outline" size="lg" asChild>
-          <Link to="/store">
-            Continue Shopping
-          </Link>
+          <Link to="/store">Continue Shopping</Link>
         </Button>
       </div>
     </div>
@@ -776,6 +800,7 @@ export default function Checkout() {
   const checkoutError = useAppSelector(selectCartError)
   const userCredits = useAppSelector(selectUserCredits)
   const user = useAppSelector(selectCurrentUser)
+  const fulfillmentWarning = useAppSelector(selectLastFulfillmentWarning)
   
   // Join cart items with book data
   const itemsWithBooks: CartItemWithBook[] = cartItems
@@ -1011,7 +1036,11 @@ export default function Checkout() {
         )}
         
         {currentStep === 'success' && (
-          <SuccessStep itemCount={purchasedCount} />
+          <SuccessStep
+            itemCount={purchasedCount}
+            fulfillmentWarning={fulfillmentWarning}
+            storeBooks={storeBooks}
+          />
         )}
       </div>
     </StripeProvider>

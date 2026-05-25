@@ -12,7 +12,7 @@ import time
 import asyncio
 import html as html_module
 import unicodedata
-from typing import (Dict, Any, List)
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 import ebooklib
 import pytesseract
@@ -35,7 +35,13 @@ from app.utils.chunker import TextChunker
 
 from app.services import r2_service
 from app.services.llm_speaker_chunker import SpeakerChunker
-from app.services.pipeline_client import notify_backend_conversion_complete, ping_service_health
+from app.services.structure_detector import StructureDetector
+from app.services.pipeline_client import (
+    notify_backend_conversion_complete,
+    ping_service_health,
+    generate_and_persist_narration,
+    refund_conversion_credit,
+)
 
 from app.database import (database, db_engine)
 
@@ -125,11 +131,52 @@ class PDFProcessorService(Logger):
         except Exception:
             pass
 
-        chunks = asyncio.run(
-            self.chunker.chunk_text(
-                text=full_text, chunk_size=chunk_size, overlap=chunk_overlap, page_map=None
+        # Detect chapters from EPUB TOC
+        detector = StructureDetector()
+        chapters = detector.detect_chapters_from_epub(book)
+
+        chapter_dicts = [
+            {
+                "chapter_number": ch.chapter_number,
+                "chapter_id":     ch.chapter_number,
+                "title":          ch.title,
+                "text":           ch.text,
+                "start_page":     ch.start_page,
+                "end_page":       ch.end_page,
+                "detection_method": ch.detection_method,
+                "confidence":     ch.confidence,
+            }
+            for ch in chapters
+        ]
+
+        if len(chapters) > 1:
+            chunks = asyncio.run(
+                self.chunker.chunk_by_chapters(
+                    chapters=chapter_dicts,
+                    chunk_size=chunk_size,
+                    overlap=chunk_overlap,
+                    page_map=None,
+                )
             )
-        )
+        else:
+            chunks = asyncio.run(
+                self.chunker.chunk_text(
+                    text=full_text, chunk_size=chunk_size, overlap=chunk_overlap, page_map=None
+                )
+            )
+
+        chapter_schemas = [
+            {
+                "chapter_id":       cd["chapter_number"],
+                "title":            cd["title"],
+                "start_page":       cd.get("start_page"),
+                "end_page":         cd.get("end_page"),
+                "detection_method": cd.get("detection_method", "none"),
+                "confidence":       cd.get("confidence", 0.0),
+            }
+            for cd in chapter_dicts
+        ]
+
         processing_time = time.time() - start_time
         return {
             "r2_key": "",
@@ -137,6 +184,7 @@ class PDFProcessorService(Logger):
             "total_characters": len(full_text),
             "total_chunks": len(chunks),
             "chunks": chunks,
+            "chapters": chapter_schemas,
             "metadata": {
                 "title": title_guess or "",
                 "author": author_guess or "",
@@ -156,7 +204,7 @@ class PDFProcessorService(Logger):
         )
 
 
-    async def process_pdf_task(self, job_id: str, user_id: str, r2_key: str, chunk_size: int, chunk_overlap: int, output_format: str, credit_type: str = "basic"):
+    async def process_pdf_task(self, job_id: str, user_id: str, r2_key: str, chunk_size: int, chunk_overlap: int, output_format: str, credit_type: str = "basic", voice_id: Optional[str] = None):
         """Background task for processing a PDF or EPUB from R2"""
         try:
             self.logger.info(f"Starting book processing for job {job_id}, user {user_id}")
@@ -333,6 +381,15 @@ class PDFProcessorService(Logger):
                 "message": "Creating library audiobook in backend",
             })
 
+            # Extract chapter data from result if available
+            chapters_data = None
+            if result.get("chapters"):
+                chapters_data = result["chapters"]
+            elif script_output_key:
+                script_result_local = locals().get("script_result")
+                if script_result_local and script_result_local.get("chapters"):
+                    chapters_data = script_result_local["chapters"]
+
             backend_book_id = await notify_backend_conversion_complete(
                 user_id=user_id,
                 processor_job_id=job_id,
@@ -344,6 +401,7 @@ class PDFProcessorService(Logger):
                 source_r2_path=r2_key,
                 processed_text_r2_key=output_key,
                 script_r2_key=script_output_key,
+                chapters=chapters_data,
             )
 
             job_result = {
@@ -370,6 +428,23 @@ class PDFProcessorService(Logger):
                 self.logger.error("Job %s: backend did not return book_id", job_id)
                 return
 
+            # ── TTS narration (single-voice, ADR-001) ──────────────────────
+            if settings.ENABLE_NARRATION and output_key:
+                await self.update_job(job_id, {
+                    "pipeline_stage": "tts",
+                    "progress": 96,
+                    "message": "Generating single-voice narration audio",
+                })
+                narr_ok, narr_key = await generate_and_persist_narration(
+                    book_id=backend_book_id,
+                    processed_text_r2_key=output_key,
+                    voice_id=voice_id,
+                )
+                if narr_ok:
+                    job_result["narration_r2_key"] = narr_key
+                else:
+                    self.logger.warning("Narration failed for book %s; book saved without audio", backend_book_id)
+
             await self.update_job(job_id, {
                 "status": "completed",
                 "pipeline_stage": "completed",
@@ -385,11 +460,18 @@ class PDFProcessorService(Logger):
         except Exception as e:
             self.logger.error(f"Job {job_id} failed: {str(e)}", exc_info=True)
             
-            # Update job with failure status
+            # Best-effort refund of the conversion credit consumed before upload
+            refunded = await refund_conversion_credit(
+                user_id=user_id,
+                credit_type=credit_type,
+                reason=f"process_pdf_task failed: {e}",
+            )
+            refund_note = " Your conversion credit has been refunded." if refunded else ""
+
             await self.update_job(job_id, {
                 "status": "failed",
                 "progress": 0,
-                "message": "Processing failed",
+                "message": f"Processing failed.{refund_note}",
                 "completed_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
                 "error": str(e)
             })
@@ -398,61 +480,97 @@ class PDFProcessorService(Logger):
     
     async def process_pdf(self, pdf_data: bytes, chunk_size: int = 1000, chunk_overlap: int = 200, output_format: str = "json") -> Dict[str, Any]:
         """
-        Process PDF and extract text with chunking
-        
-        Args:
-            pdf_data: PDF file as bytes
-            chunk_size: Size of text chunks
-            chunk_overlap: Overlap between chunks
-            output_format: Output format (json, text, markdown)
-        
-        Returns:
-            Processing result dict
-        
-        Raises:
-            ValueError: If PDF is invalid or empty
-            Exception: For processing errors
+        Process PDF and extract text with chapter-aware chunking.
+
+        Uses StructureDetector for chapter boundaries, then chunks
+        each chapter independently so no chunk spans a chapter break.
         """
         start_time = time.time()
         try:
             self.logger.info("Starting PDF processing")
-            
-            # Extract text from PDF
+
             extracted_data = self._extract_text_from_pdf(pdf_data)
 
             if not extracted_data["full_text"].strip():
                 raise ValueError("PDF contains no extractable text")
-            
-            # Chunk the text
-            chunks = await self.chunker.chunk_text(text=extracted_data["full_text"], chunk_size=chunk_size, overlap=chunk_overlap, page_map=extracted_data["page_map"])
-            
-            # Build result
+
+            # Detect chapters via StructureDetector
+            detector = StructureDetector()
+            # Tier-2 font heuristics expect TextBlock lists; empty list skips font tier (TOC/regex still run).
+            chapters = await asyncio.to_thread(
+                detector.detect_chapters_from_pdf, pdf_data, []
+            )
+
+            chapter_dicts = [
+                {
+                    "chapter_number": ch.chapter_number,
+                    "chapter_id":     ch.chapter_number,
+                    "title":          ch.title,
+                    "text":           ch.text,
+                    "start_page":     ch.start_page,
+                    "end_page":       ch.end_page,
+                    "detection_method": ch.detection_method,
+                    "confidence":     ch.confidence,
+                }
+                for ch in chapters
+            ]
+
+            if len(chapters) > 1:
+                self.logger.info(f"Detected {len(chapters)} chapters — chunking per chapter")
+                chunks = await self.chunker.chunk_by_chapters(
+                    chapters=chapter_dicts,
+                    chunk_size=chunk_size,
+                    overlap=chunk_overlap,
+                    page_map=extracted_data["page_map"],
+                )
+            else:
+                chunks = await self.chunker.chunk_text(
+                    text=extracted_data["full_text"],
+                    chunk_size=chunk_size,
+                    overlap=chunk_overlap,
+                    page_map=extracted_data["page_map"],
+                )
+
             processing_time = time.time() - start_time
-            
+
+            chapter_schemas = [
+                {
+                    "chapter_id":       cd["chapter_number"],
+                    "title":            cd["title"],
+                    "start_page":       cd.get("start_page"),
+                    "end_page":         cd.get("end_page"),
+                    "detection_method": cd.get("detection_method", "none"),
+                    "confidence":       cd.get("confidence", 0.0),
+                }
+                for cd in chapter_dicts
+            ]
+
             result = {
-                "r2_key": "",  
+                "r2_key": "",
                 "total_pages": extracted_data["total_pages"],
                 "total_characters": len(extracted_data["full_text"]),
                 "total_chunks": len(chunks),
                 "chunks": chunks,
+                "chapters": chapter_schemas,
                 "metadata": extracted_data["metadata"],
                 "processing_time": round(processing_time, 2),
-                "created_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}"
+                "created_at": f"{datetime.now().strftime('%m-%d-%Y')} at {datetime.now().strftime('%I:%M %p')}",
             }
-            
+
             self.logger.info(
                 f"PDF processing completed - "
                 f"Pages: {extracted_data['total_pages']}, "
+                f"Chapters: {len(chapter_schemas)}, "
                 f"Chunks: {len(chunks)}, "
                 f"Time: {processing_time:.2f}s"
             )
-            
+
             return result
-            
+
         except PdfReadError as e:
             self.logger.error(f"Invalid PDF file: {str(e)}")
             raise ValueError(f"Invalid or corrupted PDF file: {str(e)}")
-        
+
         except Exception as e:
             self.logger.error(f"PDF processing failed: {str(e)}", exc_info=True)
             raise Exception(f"PDF processing failed: {str(e)}")

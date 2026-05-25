@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Header, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.config_settings import settings
 from app.database.database import get_db
@@ -64,6 +64,23 @@ class ConversionCompleteRequest(BaseModel):
     source_r2_path: Optional[str] = None
     processed_text_r2_key: Optional[str] = None
     script_r2_key: Optional[str] = None
+
+
+class PatchBookAudioRequest(BaseModel):
+    """Called by orchestrator (pdf-processor or narration worker) after TTS completes."""
+
+    audio_url: Optional[str] = None
+    duration: Optional[float] = None
+    narration_status: Literal["ready", "failed"] = "ready"
+
+    @model_validator(mode="after")
+    def audio_url_when_ready(self):
+        if self.narration_status == "ready":
+            url = (self.audio_url or "").strip()
+            if not url:
+                raise ValueError("audio_url is required when narration_status is ready")
+            self.audio_url = url
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -175,3 +192,33 @@ async def complete_conversion_pipeline(
 
     logger.info("Conversion pipeline created book %s for user %s (job %s)", book_id, body.user_id, body.processor_job_id)
     return {"book_id": book_id, "processor_job_id": body.processor_job_id, "created": True}
+
+
+@router.patch("/books/{book_id}/audio", tags=["Internal"])
+async def patch_book_audio(
+    book_id: str,
+    body: PatchBookAudioRequest,
+    _: None = Depends(require_internal_key),
+    db=Depends(get_db()),
+):
+    """
+    Set audio_url and duration on a book after TTS narration completes.
+    Idempotent — safe to retry.
+    """
+    book_service = MongoDBService(db, Collections.BOOKS)
+    book = book_service.get_by_id(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    update_fields: dict = {"narration_status": body.narration_status}
+    if body.audio_url is not None:
+        update_fields["audio_url"] = body.audio_url
+    elif body.narration_status == "failed":
+        update_fields["audio_url"] = None
+    if body.duration is not None:
+        update_fields["duration"] = body.duration
+
+    update_fields["updated_at"] = datetime.utcnow()
+    book_service.collection.update_one({"_id": book["_id"]}, {"$set": update_fields})
+    logger.info("Book %s audio updated: status=%s", book_id, body.narration_status)
+    return {"book_id": book_id, "audio_url": body.audio_url, "narration_status": body.narration_status}

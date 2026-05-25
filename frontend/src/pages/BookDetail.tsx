@@ -11,6 +11,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   Play, Pause, Clock, BookOpen, ArrowLeft, Headphones,
   CheckCircle2, Radio, Calendar, User, Hash, Tag,
+  AlertCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -245,20 +246,42 @@ export default function BookDetail() {
             </div>
 
             {/* CTA button */}
-            <Button
-              size="lg"
-              onClick={handlePlay}
-              className="w-full max-w-[260px] mx-auto h-12 text-base font-semibold shadow-lg"
-            >
-              {isPopoutOpen && liveState?.audiobookId === id
-                ? isPopoutPlaying
-                  ? <><Pause className="h-5 w-5 mr-2" fill="currentColor" />Pause</>
-                  : <><Play className="h-5 w-5 mr-2" fill="currentColor" />Resume</>
-                : hasStarted
-                  ? <><Play className="h-5 w-5 mr-2" fill="currentColor" />Continue Listening</>
-                  : <><Play className="h-5 w-5 mr-2" fill="currentColor" />Play Audiobook</>
-              }
-            </Button>
+            {book.audioUrl ? (
+              <Button
+                size="lg"
+                onClick={handlePlay}
+                className="w-full max-w-[260px] mx-auto h-12 text-base font-semibold shadow-lg"
+              >
+                {isPopoutOpen && liveState?.audiobookId === id
+                  ? isPopoutPlaying
+                    ? <><Pause className="h-5 w-5 mr-2" fill="currentColor" />Pause</>
+                    : <><Play className="h-5 w-5 mr-2" fill="currentColor" />Resume</>
+                  : hasStarted
+                    ? <><Play className="h-5 w-5 mr-2" fill="currentColor" />Continue Listening</>
+                    : <><Play className="h-5 w-5 mr-2" fill="currentColor" />Play Audiobook</>
+                }
+              </Button>
+            ) : book.narrationStatus === 'failed' ? (
+              <div className="w-full max-w-[260px] mx-auto text-center space-y-2">
+                <Button size="lg" disabled variant="destructive" className="w-full h-12 text-base font-semibold">
+                  <AlertCircle className="h-5 w-5 mr-2" />
+                  Narration Failed
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  We couldn&apos;t generate audio for this title. Try uploading again or contact support.
+                </p>
+              </div>
+            ) : (
+              <div className="w-full max-w-[260px] mx-auto text-center space-y-2">
+                <Button size="lg" disabled className="w-full h-12 text-base font-semibold">
+                  <Clock className="h-5 w-5 mr-2" />
+                  Audio Not Ready
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Narration is still being generated. Check back shortly.
+                </p>
+              </div>
+            )}
 
             {/* Overall progress */}
             {hasStarted && (

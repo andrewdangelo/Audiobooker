@@ -81,6 +81,12 @@ class Settings(BaseSettings):
         description="Base URL of the backend service (for POST /internal/conversion/complete)",
     )
 
+    # Auth-service internal API (for credit refund on failure)
+    AUTH_SERVICE_BASE_URL: str = Field(
+        default="http://127.0.0.1:8001/api/v1/auth",
+        description="Base URL of the auth service accounts API",
+    )
+
     # Optional pipeline health checks (full URL to a GET endpoint, e.g. /health)
     AI_SERVICE_HEALTH_URL: Optional[str] = Field(
         default=None,
@@ -89,6 +95,24 @@ class Settings(BaseSettings):
     TTS_SERVICE_HEALTH_URL: Optional[str] = Field(
         default=None,
         description="If set, pipeline pings this URL before backend finalization",
+    )
+
+    # TTS narration (single-voice pipeline, ADR-001)
+    TTS_SERVICE_BASE_URL: str = Field(
+        default="http://127.0.0.1:8003/api/v1/tts/tts_processor",
+        description="Base URL of TTS service batch endpoint (without trailing /batch)",
+    )
+    DEFAULT_BASIC_VOICE_ID: str = Field(
+        default="21m00Tcm4TlvDq8ikWAM",
+        description="ElevenLabs voice ID used when no explicit voice is provided (Rachel)",
+    )
+    TTS_PROVIDER: str = Field(
+        default="elevenlabs",
+        description="TTS provider name (elevenlabs | openai)",
+    )
+    ENABLE_NARRATION: bool = Field(
+        default=True,
+        description="When True the pipeline calls TTS after extraction; False keeps text-only mode",
     )
 
     @validator("ENVIRONMENT")
