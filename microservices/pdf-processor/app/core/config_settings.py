@@ -97,6 +97,12 @@ class Settings(BaseSettings):
         description="Base URL of tts-infrastructure (for POST /book-generation/start)",
     )
 
+    # ai-service base URL (for BookBrain bootstrap trigger)
+    AI_SERVICE_BASE_URL: str = Field(
+        default="http://127.0.0.1:8001/api/v1",
+        description="Base URL of ai-service (for POST /bookbrain/{book_id}/bootstrap)",
+    )
+
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         """Validate environment values"""

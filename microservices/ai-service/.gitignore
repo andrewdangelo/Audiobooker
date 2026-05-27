@@ -51,3 +51,4 @@ proj-code-dump/
 Thumbs.db
 
 # Test Data
+tests/bookbrain/gutenberg_cache/

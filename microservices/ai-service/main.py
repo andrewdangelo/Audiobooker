@@ -14,8 +14,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from app.core.config_settings import settings
 from app.core.logging_config import setup_logging
-from app.routers import ai_generation, voice_library, health, internal_tts
+from app.routers import ai_generation, voice_library, health, internal_tts, bookbrain
 from app.services.voice_library import VoiceLibraryManager
+from app.bookbrain.wiki_store import BookBrainWikiStore
+from app.bookbrain.agent import BookBrainAgent
 
 __version__ = settings.TEST_VERSION
 __author__ = "Matt"
@@ -30,7 +32,8 @@ async def lifespan(app: FastAPI):
     logger.info("LIFESPAN STARTUP RUNNING")
 
     mongo_client = AsyncIOMotorClient(settings.MONGODB_URL)
-    collection = mongo_client["audiobooker_backend_db"]["voice_library"]
+    db = mongo_client["audiobooker_backend_db"]
+    collection = db["voice_library"]
 
     r2_session = aioboto3.Session()
     r2_config = {
@@ -42,6 +45,14 @@ async def lifespan(app: FastAPI):
 
     app.state.voice_manager = VoiceLibraryManager(collection, r2_session, r2_config)
     logger.info("VoiceLibraryManager initialised")
+
+    bookbrain_collection = db[BookBrainWikiStore.COLLECTION_NAME]
+    await bookbrain_collection.create_index(
+        [("book_id", 1), ("entry_type", 1), ("title", 1)], unique=False
+    )
+    wiki_store = BookBrainWikiStore(bookbrain_collection)
+    app.state.bookbrain_agent = BookBrainAgent(store=wiki_store)
+    logger.info("BookBrainAgent initialised")
 
     yield
 
@@ -92,6 +103,12 @@ app.include_router(
     internal_tts.router,
     prefix=f"{settings.API_V1_PREFIX}/internal",
     tags=["Internal (Service-to-Service)"]
+)
+
+app.include_router(
+    bookbrain.router,
+    prefix=f"{settings.API_V1_PREFIX}/bookbrain",
+    tags=["BookBrain"]
 )
 
 
