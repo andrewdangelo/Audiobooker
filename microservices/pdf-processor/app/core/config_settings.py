@@ -90,6 +90,18 @@ class Settings(BaseSettings):
         default=None,
         description="If set, pipeline pings this URL before backend finalization",
     )
+    
+    # tts-infrastructure base URL (for POST /book-generation/start)
+    TTS_SERVICE_BASE_URL: str = Field(
+        default="http://127.0.0.1:8003/api/v1/tts",
+        description="Base URL of tts-infrastructure (for POST /book-generation/start)",
+    )
+
+    # ai-service base URL (for BookBrain bootstrap trigger)
+    AI_SERVICE_BASE_URL: str = Field(
+        default="http://127.0.0.1:8001/api/v1",
+        description="Base URL of ai-service (for POST /bookbrain/{book_id}/bootstrap)",
+    )
 
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):

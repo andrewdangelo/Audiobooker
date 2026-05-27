@@ -1,11 +1,10 @@
 [
     {
-        "provider": "cf",
-        "preset": "chat-fast",
+        "preset": "chat-knowledge",
         "prompt_messages": [
             ["user", "What are the latest developments in fusion energy?"]
         ],
-        "search_query_template": null
+        "search_query_text": "Fusion Energy news wiki and basics"
     },
     
     {

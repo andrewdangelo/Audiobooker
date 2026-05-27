@@ -79,3 +79,87 @@ async def notify_backend_conversion_complete(
     except Exception as e:
         logger.error("Backend conversion notify failed: %s", e, exc_info=True)
         return None
+
+
+async def trigger_bookbrain_bootstrap(
+    *,
+    book_id: str,
+    book_title: str,
+    author: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Fire-and-forget: tell ai-service to seed the BookBrain wiki from external sources.
+
+    Call immediately after a book job is created — runs concurrently with PDF
+    extraction so the wiki is pre-seeded with character stubs, themes, and setting
+    notes before the first chunk reaches the ingest loop.
+
+    Failure does NOT fail the pipeline — the ingest loop is fully self-sufficient
+    without bootstrap data. Bootstrap entries act as an enhancement only.
+
+    Returns the BootstrapReport dict (for logging) or None on any failure.
+    """
+    base = (settings.AI_SERVICE_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        logger.warning("AI_SERVICE_BASE_URL not configured; skipping BookBrain bootstrap")
+        return None
+
+    url = f"{base}/bookbrain/{book_id}/bootstrap"
+    payload: Dict[str, Any] = {"book_title": book_title}
+    if author:
+        payload["author"] = author
+    headers = {"X-Internal-Service-Key": settings.INTERNAL_SERVICE_KEY}
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            logger.info(
+                "BookBrain bootstrap complete — book_id=%s sources=%s entries_seeded=%d",
+                book_id, data.get("sources_succeeded"), data.get("entries_seeded"),
+            )
+            return data
+    except Exception as e:
+        logger.error("trigger_bookbrain_bootstrap failed (book %s): %s", book_id, e)
+        return None
+
+
+async def trigger_book_generation(
+    *,
+    book_id: str,
+    script_r2_key: str,
+    user_id: str,
+) -> Optional[str]:
+    """
+    Tell tts-infrastructure to start async audio generation for a book.
+    Called after backend confirms the book record exists and script_r2_key is set.
+ 
+    Returns the tts-infrastructure job_id (for logging/debugging), or None on failure.
+    Failure here does NOT fail the pdf-processor job — generation can be re-triggered.
+    """
+    base = (settings.TTS_SERVICE_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        logger.warning("TTS_SERVICE_BASE_URL not configured; skipping book generation trigger")
+        return None
+ 
+    url = f"{base}/book-generation/start"
+    payload: Dict[str, Any] = {
+        "book_id": book_id,
+        "script_r2_key": script_r2_key,
+        "user_id": user_id,
+    }
+    headers = {"X-Internal-Service-Key": settings.INTERNAL_SERVICE_KEY}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            gen_job_id = data.get("job_id")
+            logger.info(
+                "Book generation triggered — book_id=%s tts_job_id=%s",
+                book_id, gen_job_id,
+            )
+            return gen_job_id
+    except Exception as e:
+        logger.error("trigger_book_generation failed (book %s): %s", book_id, e)
+        return None

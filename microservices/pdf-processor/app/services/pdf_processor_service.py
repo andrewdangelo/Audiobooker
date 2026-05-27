@@ -4,7 +4,7 @@ PDF Processing Service
 Core service for extracting and processing text from PDFs.
 """
 __author__ = "Mohammad Saifan"
-__contributor__ = "Andrew D'Angelo"
+__contributor__ = "Andrew D'Angelo" # Matthew Jaworski also touched this file :P
 
 import io
 import re
@@ -35,7 +35,7 @@ from app.utils.chunker import TextChunker
 
 from app.services import r2_service
 from app.services.llm_speaker_chunker import SpeakerChunker
-from app.services.pipeline_client import notify_backend_conversion_complete, ping_service_health
+from app.services.pipeline_client import notify_backend_conversion_complete, ping_service_health, trigger_book_generation
 
 from app.database import (database, db_engine)
 
@@ -369,6 +369,21 @@ class PDFProcessorService(Logger):
                 })
                 self.logger.error("Job %s: backend did not return book_id", job_id)
                 return
+            
+            # Trigger async audio generation in tts-infrastructure.
+            # Fire-and-forget: failure here does NOT fail this job.
+            if script_output_key:
+                await trigger_book_generation(
+                    book_id=backend_book_id,
+                    script_r2_key=script_output_key,
+                    user_id=user_id,
+                )
+            else:
+                self.logger.warning(
+                    "Job %s: no script_r2_key — audio generation not triggered. "
+                    "LLM chunking was disabled or failed.",
+                    job_id,
+                )
 
             await self.update_job(job_id, {
                 "status": "completed",

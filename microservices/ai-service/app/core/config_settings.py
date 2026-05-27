@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     MATT_CF_AI_TOKEN: str
     
     TAVILY_API_KEY: str
+    
+    INTERNAL_SERVICE_KEY: str = Field(..., description="Shared secret for internal service-to-service calls")
 
     # Settings-like values
     # LLM_MAX_TOKENS: int = Field(default=4096)

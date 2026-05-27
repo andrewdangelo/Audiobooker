@@ -25,7 +25,7 @@ class ChatRequest(AIRequest):
     inputs: Optional[Dict[str, Any]] = None # optional overrides: temperature, max_tokens, etc.
 
 class RagChatRequest(ChatRequest):
-    search_query_template: Optional[str] = None
+    search_query_text: Optional[str] = None
 
 class EmbeddingRequest(AIRequest):
     text: str
@@ -71,7 +71,8 @@ async def stream_chat(req: ChatRequest):
 @router.post("/chat/web-rag")
 async def rag_chat(req: RagChatRequest):
     """
-    Chat with automated Web Context (RAG) via DuckDuckGo.
+    Chat with automated Web Context (RAG) via Tavily.
+    Pass search_query_text to use a fixed query, or omit it to let the LLM derive one.
     """
     try:
         answer, context = await AITextService.chat_rag_web_context(
@@ -79,10 +80,9 @@ async def rag_chat(req: RagChatRequest):
             provider=req.provider,
             deployment_name=req.deployment_name,
             preset=req.preset,
-            search_query_template=req.search_query_template,
+            search_query_text=req.search_query_text,   # <-- updated
             inputs=req.inputs,
         )
-        
         return {"answer": answer, "context": context}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

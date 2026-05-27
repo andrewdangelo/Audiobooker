@@ -44,9 +44,11 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+proj-code-dump/
 
 # OS
 .DS_Store
 Thumbs.db
 
 # Test Data
+tests/bookbrain/gutenberg_cache/

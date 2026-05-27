@@ -2,28 +2,92 @@
 conftest.py — Shared pytest fixtures
 =====================================
 pytest automatically loads this file for every test in the directory.
-Fixtures defined here are available to ALL test files without importing.
+Fixtures and helpers defined here are available to ALL test files without
+importing.
 
-Key concepts used here:
-  - AsyncMock  : a Mock that can be awaited (for async functions)
-  - MagicMock  : a regular Mock for sync objects/classes
-  - patch      : temporarily replaces a real object with a Mock for the duration
-                 of a test, then restores it automatically
+Key decisions:
+  - Settings are mocked at import time via a module-level patch so tests
+    never depend on a real .env file existing. This makes the suite runnable
+    in CI, on a colleague's machine, or anywhere without credentials.
+  - All external I/O (Cloudflare, MongoDB, R2, Tavily) is mocked so unit
+    tests cost $0 and run in milliseconds.
 """
 
 import pytest
-import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
 
 
 # ---------------------------------------------------------------------------
-# Reusable fake LLM response builder
+# Settings mock — must happen before any app.* import
+#
+# settings = Settings() runs at module level in config_settings.py, which
+# means the moment any test imports anything from app/, Pydantic tries to
+# load your .env file and validate every required field. If the file is
+# missing (CI, fresh clone, colleague's machine) the entire test suite
+# crashes before a single test runs.
+#
+# We intercept it here by patching the Settings class to return a
+# SimpleNamespace with fake-but-valid values for every field the app code
+# actually reads during tests.
+# ---------------------------------------------------------------------------
+
+FAKE_SETTINGS = SimpleNamespace(
+    ENVIRONMENT="development",
+    PORT=8002,
+    LOG_LEVEL="INFO",
+    DEBUG=True,
+    TEST_VERSION="test",
+    API_V1_PREFIX="/api/v1",
+    MONGODB_URL="mongodb://fake:27017",
+    R2_ACCOUNT_ID="fake-r2-account",
+    R2_ACCESS_KEY_ID="fake-r2-key",
+    R2_SECRET_ACCESS_KEY="fake-r2-secret",
+    R2_BUCKET_NAME="fake-bucket",
+    R2_ENDPOINT_URL=None,
+    CORS_ORIGINS=["http://localhost:3000"],
+    REDIS_HOST="localhost",
+    REDIS_PORT=6379,
+    REDIS_DB=0,
+    REDIS_PASSWORD=None,
+    DEFAULT_CHUNK_SIZE=1000,
+    DEFAULT_CHUNK_OVERLAP=200,
+    MAX_FILE_SIZE_MB=100,
+    ENABLE_LLM_CHUNKING=True,
+    HF_ENDPOINT_URL="https://fake-hf-endpoint.example.com",
+    HF_TOKEN="fake-hf-token",
+    HF_WRITE_TOKEN="fake-hf-write-token",
+    HF_NAMESPACE="fake-namespace",
+    LLM_SERVERLESS=True,
+    LLM_MODEL="fake/model",
+    LLM_CONCURRENCY=10,
+    LLM_MAX_CHARS_PER_WINDOW=20000,
+    LLM_DISCOVERY_CHARS=17000,
+    LLM_DELAY_BETWEEN_REQUESTS=2.0,
+    LLM_ENDPOINT_NAME="fake-endpoint-001",
+    TTS_CONCURRENCY=1,
+    MATT_CF_ACCOUNT_ID="fake-cf-account",
+    MATT_CF_AI_TOKEN="fake-cf-token",
+    TAVILY_API_KEY="fake-tavily-key",
+    # Properties
+    is_production=False,
+    is_development=True,
+)
+
+# Patch at module level — this runs once when conftest is loaded, before
+# any test file imports app code.
+patch("app.core.config_settings.Settings", return_value=FAKE_SETTINGS).start()
+patch("app.core.config_settings.settings", FAKE_SETTINGS).start()
+
+
+# ---------------------------------------------------------------------------
+# Reusable fake LLM response builders
 # ---------------------------------------------------------------------------
 
 def make_openai_response(content: str) -> MagicMock:
     """
     Builds a fake openai ChatCompletion response object.
-    Mirrors the shape your code actually accesses:
+    Mirrors the shape the code actually accesses:
         response.choices[0].message.content
     """
     message = MagicMock()
@@ -31,7 +95,7 @@ def make_openai_response(content: str) -> MagicMock:
 
     choice = MagicMock()
     choice.message = message
-    choice.delta = message   # used in streaming
+    choice.delta = message  # used in streaming
 
     response = MagicMock()
     response.choices = [choice]
@@ -65,8 +129,6 @@ def mock_model_factory():
     """
     Patches ModelFactory.get_model so no network call is ever made.
     Returns a (client, model_name) tuple just like the real factory.
-
-    Use this in any test that exercises code which calls ModelFactory.
     """
     fake_client = make_async_openai_client("mocked LLM response")
     with patch(
@@ -93,18 +155,25 @@ def mock_embedding_service():
 @pytest.fixture
 def mock_tavily():
     """
-    Patches AsyncTavilyClient.search so RAG tests never hit the internet.
-    Returns two canned search snippets.
+    Patches AsyncTavilyClient so RAG tests never hit the internet.
+    Returns two canned search snippets that match the shape _fetch_web_snippets
+    expects from Tavily's response.
     """
     fake_results = {
         "results": [
-            {"title": "Fake Article 1", "content": "Fusion energy breakthrough.", "url": "http://fake1.com"},
-            {"title": "Fake Article 2", "content": "Scientists say progress.", "url": "http://fake2.com"},
+            {
+                "title": "Fake Article 1",
+                "content": "Fusion energy breakthrough.",
+                "url": "http://fake1.com",
+            },
+            {
+                "title": "Fake Article 2",
+                "content": "Scientists say progress.",
+                "url": "http://fake2.com",
+            },
         ]
     }
-    with patch(
-        "app.services.ai_text_service.AsyncTavilyClient",
-    ) as MockTavily:
+    with patch("app.services.ai_text_service.AsyncTavilyClient") as MockTavily:
         instance = MockTavily.return_value
         instance.search = AsyncMock(return_value=fake_results)
         yield instance
@@ -123,24 +192,23 @@ def mock_mongo_collection():
     """
     collection = MagicMock()
 
-    # find_one → async, returns a single document
     collection.find_one = AsyncMock(return_value=None)
-
-    # insert_one → async
     collection.insert_one = AsyncMock(return_value=MagicMock(inserted_id="fake-id"))
 
-    # delete_one → async, simulates found + deleted
     delete_result = MagicMock()
     delete_result.deleted_count = 1
     collection.delete_one = AsyncMock(return_value=delete_result)
 
-    # find → returns a chainable cursor mock
     cursor = MagicMock()
     cursor.to_list = AsyncMock(return_value=[])
     collection.find = MagicMock(return_value=cursor)
 
     return collection
 
+
+# ---------------------------------------------------------------------------
+# Fixtures: R2 / S3 mock
+# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def mock_r2():
@@ -151,8 +219,8 @@ def mock_r2():
     s3_client = AsyncMock()
     s3_client.put_object = AsyncMock()
     s3_client.delete_object = AsyncMock()
+    s3_client.get_object = AsyncMock()
 
-    # Simulate async context manager: `async with session.client(...) as s3`
     cm = AsyncMock()
     cm.__aenter__ = AsyncMock(return_value=s3_client)
     cm.__aexit__ = AsyncMock(return_value=False)
